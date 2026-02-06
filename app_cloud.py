@@ -5,142 +5,117 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="Gestão de Obra Pro", layout="wide")
 
-# --- CONEXÃO E CONFIGURAÇÃO ---
+# --- CONEXÃO ---
 def conectar_gsheets():
     try:
         if "gcp_service_account" not in st.secrets:
-            st.error("Secrets não encontrados.")
+            st.error("Secrets não configurados.")
             return None, None
-
+        
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
-        # Abre a planilha principal
         sh = client.open("Dados_Obra")
         return client, sh
     except Exception as e:
         st.error(f"Erro de conexão: {e}")
         return None, None
 
-# --- GERENCIAMENTO DE ABAS (WORKSHEETS) ---
-def carregar_dados_custos(sh):
-    try:
-        ws = sh.sheet1
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        if df.empty:
-             return ws, pd.DataFrame(columns=['data', 'descricao', 'quantidade', 'unidade', 'valor_un', 'total', 'classe', 'subclasse', 'etapa'])
-        return ws, df
-    except:
-        return None, pd.DataFrame()
-
-def gerenciar_cronograma(sh):
-    # Tenta abrir a aba 'Cronograma', se não existir, cria ela
+# --- FUNÇÃO AUTO-CORRETORA DE CRONOGRAMA ---
+def garantir_cronograma(sh):
     etapas_padrao = ["Fundação", "Alvenaria", "Laje", "Reboco Externo", "Reboco Interno", "Acabamento"]
+    
     try:
         ws = sh.worksheet("Cronograma")
     except:
-        # Cria a aba se não existir
         ws = sh.add_worksheet(title="Cronograma", rows=20, cols=3)
-        ws.append_row(["Etapa", "Status", "Responsavel"]) # Cabeçalho
-        for etapa in etapas_padrao:
-            ws.append_row([etapa, "Pendente", "-"])
-            
-    # Ler os dados atuais
-    dados = ws.get_all_records()
-    df_cronograma = pd.DataFrame(dados)
-    
-    # Se estiver vazio (só cabeçalho), popula novamente
-    if df_cronograma.empty:
-        for etapa in etapas_padrao:
-            ws.append_row([etapa, "Pendente", "-"])
-        dados = ws.get_all_records()
-        df_cronograma = pd.DataFrame(dados)
-        
-    return ws, df_cronograma
 
-# --- INTERFACE PRINCIPAL ---
+    # Verifica se a aba está vazia ou com cabeçalho errado
+    valores = ws.get_all_values()
+    
+    # Se tiver menos de 2 linhas ou o cabeçalho estiver errado, REFAZ TUDO
+    if len(valores) < 2 or valores[0] != ["Etapa", "Status", "Responsavel"]:
+        ws.clear() # Limpa a bagunça
+        ws.append_row(["Etapa", "Status", "Responsavel"]) # Cria Cabeçalho
+        for etapa in etapas_padrao:
+            ws.append_row([etapa, "Pendente", "-"])
+        st.toast("Aba Cronograma configurada automaticamente!", icon="✅")
+            
+    return ws
+
+# --- CARREGAR CUSTOS ---
+def carregar_custos(sh):
+    ws = sh.sheet1
+    try:
+        df = pd.DataFrame(ws.get_all_records())
+    except:
+        df = pd.DataFrame()
+    return ws, df
+
+# --- APP ---
 client, sh = conectar_gsheets()
 
 if sh:
-    # Carrega as duas abas
-    ws_custos, df_custos = carregar_dados_custos(sh)
-    ws_cronograma, df_cronograma = gerenciar_cronograma(sh)
+    # 1. Garante que as abas existem e estão certas
+    ws_cronograma = garantir_cronograma(sh)
+    ws_custos, df_custos = carregar_custos(sh)
 
-    st.title("🏗️ Gestor de Obras - Painel Integrado")
+    # 2. Lê os dados do cronograma já corrigidos
+    df_cronograma = pd.DataFrame(ws_cronograma.get_all_records())
 
-    # --- BARRA LATERAL (CRONOGRAMA INTELIGENTE) ---
-    st.sidebar.header("📅 Status da Obra")
+    st.title("🏗️ Gestor de Obras")
+
+    # --- BARRA LATERAL (CHECKBOXES) ---
+    st.sidebar.header("📅 Etapas")
     
-    # Calcula Progresso
-    total_etapas = len(df_cronograma)
-    concluidas = len(df_cronograma[df_cronograma['Status'] == 'Concluído'])
-    progresso = concluidas / total_etapas if total_etapas > 0 else 0
-    
+    # Barra de Progresso
+    total = len(df_cronograma)
+    feitos = len(df_cronograma[df_cronograma['Status'] == 'Concluído'])
+    progresso = feitos / total if total > 0 else 0
     st.sidebar.progress(progresso)
-    st.sidebar.write(f"**Progresso: {int(progresso * 100)}%**")
-    st.sidebar.divider()
-
-    # Renderiza os Checkboxes
-    # Convertemos o dataframe para uma lista de dicionários para iterar fácil
-    lista_etapas = df_cronograma.to_dict('records')
+    st.sidebar.caption(f"{int(progresso*100)}% Concluído")
     
+    # Checkboxes com atualização em tempo real
+    lista_etapas = df_cronograma.to_dict('records')
     for i, item in enumerate(lista_etapas):
-        nome_etapa = item['Etapa']
-        status_atual = item['Status'] == 'Concluído'
+        nome = item['Etapa']
+        status_bool = True if item['Status'] == 'Concluído' else False
         
-        # Checkbox
-        novo_status = st.sidebar.checkbox(nome_etapa, value=status_atual, key=f"crono_{i}")
+        # O key=f"check_{i}" é vital para não misturar os botões
+        novo_check = st.sidebar.checkbox(nome, value=status_bool, key=f"check_{i}")
         
-        # Se o usuário mudou o status, atualiza no Google Sheets
-        if novo_status != status_atual:
-            status_texto = "Concluído" if novo_status else "Pendente"
-            # O gspread usa index base 1, e temos cabeçalho, então linha = i + 2
-            ws_cronograma.update_cell(i + 2, 2, status_texto)
-            st.rerun() # Recarrega a página para atualizar o gráfico
-
-    # --- ÁREA DE LANÇAMENTO DE CUSTOS ---
-    # (Mantemos a lógica de lançamento que já funcionava)
-    with st.expander("💸 Lançamento Financeiro", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            data_input = st.date_input("Data")
-            desc = st.text_input("Descrição")
-            classe = st.selectbox("Classe", ["Materiais Básicos", "Hidráulica", "Elétrica", "Mão de Obra", "Acabamento"])
-        with col2:
-            qtd = st.number_input("Quantidade", min_value=0.01)
-            un = st.selectbox("Unidade", ["Saco", "m³", "Unid", "Peça", "Litro", "Kg", "H/m"])
-            sub = st.text_input("Subclasse")
-        with col3:
-            valor = st.number_input("Valor Unitário (R$)", min_value=0.0)
-            etapa_vinculo = st.selectbox("Vincular à Etapa", df_cronograma['Etapa'].tolist())
-            
-        if st.button("Salvar Custo"):
-            novo_dado = [
-                data_input.strftime('%d/%m/%Y'), desc, float(qtd), un,
-                float(valor), float(qtd * valor), classe, sub, etapa_vinculo
-            ]
-            ws_custos.append_row(novo_dado)
-            st.success("Custo registrado!")
+        # Se mudou o status, salva no Google
+        if novo_check != status_bool:
+            novo_texto = "Concluído" if novo_check else "Pendente"
+            ws_cronograma.update_cell(i + 2, 2, novo_texto)
             st.rerun()
 
-    # --- DASHBOARD ---
-    st.divider()
-    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
-    
-    custo_total = df_custos['total'].sum() if not df_custos.empty else 0
-    
-    col_kpi1.metric("Investimento Total", f"R$ {custo_total:,.2f}")
-    col_kpi2.metric("Etapas Concluídas", f"{concluidas}/{total_etapas}")
-    col_kpi3.metric("Previsão de Término", "A definir") # Futura implementação
-
-    if not df_custos.empty:
-        st.subheader("Detalhamento de Gastos")
-        st.dataframe(df_custos, use_container_width=True)
+    # --- TELA PRINCIPAL (CUSTOS) ---
+    with st.expander("💰 Novo Gasto", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        dt = c1.date_input("Data")
+        desc = c1.text_input("Descrição")
+        classe = c1.selectbox("Classe", ["Material", "Mão de Obra", "Ferramentas", "Outros"])
         
-        st.subheader("Custos por Etapa")
-        # Gráfico vinculando custo à etapa
-        custo_por_etapa = df_custos.groupby('etapa')['total'].sum()
-        st.bar_chart(custo_por_etapa)
+        qtd = c2.number_input("Qtd", 1.0)
+        un = c2.selectbox("Un", ["un", "m", "m2", "m3", "kg", "dia"])
+        sub = c2.text_input("Subclasse (ex: Cimento)")
+        
+        val = c3.number_input("Valor Unit.", 0.0)
+        vinc = c3.selectbox("Etapa", df_cronograma['Etapa'].tolist())
+        
+        if st.button("Salvar"):
+            ws_custos.append_row([
+                str(dt), desc, qtd, un, val, qtd*val, classe, sub, vinc
+            ])
+            st.success("Salvo!")
+            st.rerun()
+
+    # --- RELATÓRIO ---
+    if not df_custos.empty:
+        # Garante que a coluna 'total' seja numérica para somar
+        if 'total' in df_custos.columns:
+            total_gasto = pd.to_numeric(df_custos['total'], errors='coerce').sum()
+            st.metric("Total Gasto", f"R$ {total_gasto:,.2f}")
+            st.dataframe(df_custos, use_container_width=True)
