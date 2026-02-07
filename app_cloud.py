@@ -220,3 +220,4 @@ with tab3:
                 st.download_button("⬇️ Baixar PDF", pdf_bytes, "relatorio_obra.pdf", "application/pdf")
             else:
                 st.warning("Sem dados para gerar relatório.")
+
