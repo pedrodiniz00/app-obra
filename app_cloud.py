@@ -168,27 +168,98 @@ with tab1:
                 st.rerun()
 
 # --- ABA 2: ORÇAMENTO (PREVISTO X REALIZADO) ---
+# --- ABA 2: ORÇAMENTO (PREVISTO X REALIZADO) ---
 with tab2:
-    st.header("Controle Financeiro")
-    
-    # Área para definir o orçamento PELO APP
-    with st.expander("✏️ Definir Metas de Orçamento", expanded=False):
-        if not df_cronograma.empty:
-            c_input1, c_input2, c_btn = st.columns([2, 1, 1])
-            etapa_sel = c_input1.selectbox("Escolha a Etapa:", df_cronograma['Etapa'].unique())
-            valor_meta = c_input2.number_input("Valor da Meta (R$):", min_value=0.0)
-            
-            if c_btn.button("Atualizar Meta"):
-                _, ws_c = pegar_planilha_escrita()
-                # Acha a linha da etapa
-                cell = ws_c.find(etapa_sel)
-                # Atualiza a coluna 3 (Orcamento) naquela linha
-                ws_c.update_cell(cell.row, 3, valor_meta)
-                st.success(f"Meta de {etapa_sel} atualizada!")
-                st.cache_data.clear()
-                time.sleep(1)
-                st.rerun()
+    st.header("📊 Análise Financeira")
 
+    # 1. Verifica se tem dados para comparar
+    if df_cronograma.empty:
+        st.warning("A aba Cronograma está vazia ou não foi lida.")
+    
+    # 2. Verifica se a coluna Orçamento existe
+    elif "Orcamento" not in df_cronograma.columns:
+        st.error("ERRO: Não encontrei a coluna 'Orcamento' na aba Cronograma.")
+        st.info("Vá na planilha, aba Cronograma, e crie a coluna 'Orcamento' na linha 1.")
+    
+    else:
+        # --- DEFINIR METAS (INPUT) ---
+        with st.expander("✏️ Editar Orçamento Manualmente", expanded=False):
+            c_input1, c_input2, c_btn = st.columns([2, 1, 1])
+            lista_etapas = df_cronograma['Etapa'].unique()
+            etapa_sel = c_input1.selectbox("Escolha a Etapa:", lista_etapas)
+            
+            # Tenta pegar valor atual
+            valor_atual = df_cronograma.loc[df_cronograma['Etapa'] == etapa_sel, 'Orcamento'].values[0]
+            # Se for texto ou vazio, vira zero
+            try: valor_atual = float(str(valor_atual).replace('R$','').replace('.','').replace(',','.'))
+            except: valor_atual = 0.0
+            
+            valor_meta = c_input2.number_input("Meta (R$):", value=float(valor_atual), min_value=0.0)
+            
+            if c_btn.button("Salvar Meta"):
+                _, ws_c = pegar_planilha_escrita()
+                cell = ws_c.find(etapa_sel)
+                # Acha a coluna Orcamento (procura o cabeçalho)
+                try:
+                    col_orc = ws_c.find("Orcamento").col
+                    ws_c.update_cell(cell.row, col_orc, valor_meta)
+                    st.success(f"Meta de {etapa_sel} atualizada!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                except:
+                    st.error("Não achei a coluna 'Orcamento' na planilha para salvar.")
+
+        # --- PROCESSAMENTO DOS DADOS PARA O GRÁFICO ---
+        
+        # 1. Limpeza dos valores de Orçamento (Garante que é número)
+        df_cronograma['Orcamento'] = pd.to_numeric(
+            df_cronograma['Orcamento'].astype(str).str.replace('R$','').str.replace('.','').str.replace(',','.'), 
+            errors='coerce'
+        ).fillna(0)
+        
+        # 2. Soma dos Gastos por Etapa
+        if not df_custos.empty:
+            gastos = df_custos.groupby('vincular_etapa')['total'].sum().reset_index() if 'vincular_etapa' in df_custos.columns else df_custos.groupby('etapa')['total'].sum().reset_index()
+            # Ajuste de nome de coluna para garantir o merge
+            gastos.columns = ['Etapa_Gasto', 'Valor_Gasto']
+        else:
+            gastos = pd.DataFrame(columns=['Etapa_Gasto', 'Valor_Gasto'])
+
+        # 3. Juntar as tabelas (Merge)
+        # Atenção: 'Etapa' (Cronograma) tem que ser igual a 'Etapa_Gasto' (Custos)
+        resumo = pd.merge(df_cronograma, gastos, left_on='Etapa', right_on='Etapa_Gasto', how='left').fillna(0)
+        
+        # 4. Preparar tabela final
+        tabela_grafico = pd.DataFrame({
+            'Etapa': resumo['Etapa'],
+            'Orçado': resumo['Orcamento'],
+            'Executado': resumo['Valor_Gasto']
+        }).set_index('Etapa')
+
+        # --- EXIBIÇÃO ---
+        
+        # Métricas no Topo
+        total_orcado = tabela_grafico['Orçado'].sum()
+        total_executado = tabela_grafico['Executado'].sum()
+        saldo = total_orcado - total_executado
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Orçamento Total", f"R$ {total_orcado:,.2f}")
+        k2.metric("Gasto Realizado", f"R$ {total_executado:,.2f}")
+        k3.metric("Saldo", f"R$ {saldo:,.2f}", delta=saldo)
+
+        st.divider()
+        
+        st.subheader("Gráfico: Previsto x Realizado")
+        if total_orcado == 0 and total_executado == 0:
+            st.info("Defina as metas de orçamento acima para ver o gráfico.")
+        else:
+            # Gráfico de Barras com duas cores
+            st.bar_chart(tabela_grafico)
+            
+            # Tabela Detalhada
+            st.dataframe(tabela_grafico, use_container_width=True)
     # Gráfico Comparativo
     if not df_custos.empty and not df_cronograma.empty:
         # Garante que a coluna Orcamento existe e é número
@@ -227,5 +298,6 @@ with tab3:
                 st.download_button("⬇️ Baixar Excel", excel_data, "obra.xlsx")
             else:
                 st.warning("Sem dados para Excel.")
+
 
 
