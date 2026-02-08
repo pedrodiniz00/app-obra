@@ -56,7 +56,7 @@ def pegar_planilhas_escrita():
     try: ws_crono = sh.worksheet("Cronograma")
     except: ws_crono = sh.add_worksheet("Cronograma", 20, 5)
     
-    # Aba Materiais (NOVA)
+    # Aba Materiais
     try: ws_mat = sh.worksheet("Materiais")
     except: 
         ws_mat = sh.add_worksheet("Materiais", 100, 4)
@@ -74,7 +74,6 @@ def carregar_dados_completo():
     # 1. CUSTOS
     try:
         ws = sh.sheet1
-        # Verifica e corrige cabeçalho
         if ws.row_values(1) != COLS_CUSTOS:
             ws.update(range_name="A1:I1", values=[COLS_CUSTOS])
         
@@ -95,14 +94,15 @@ def carregar_dados_completo():
             df_crono['Orcamento'] = df_crono['Orcamento'].apply(limpar_dinheiro)
     except: df_crono = pd.DataFrame()
 
-    # 3. MATERIAIS (CATÁLOGO)
+    # 3. MATERIAIS
     try:
         ws_m = sh.worksheet("Materiais")
         vals_m = ws_m.get_all_records()
         df_materiais = pd.DataFrame(vals_m)
-        # Garante que as colunas existem mesmo se vazia
         if df_materiais.empty:
             df_materiais = pd.DataFrame(columns=COLS_MATERIAIS)
+        # Cria coluna row_num para saber onde editar
+        df_materiais['row_num'] = df_materiais.index + 2
     except:
         df_materiais = pd.DataFrame(columns=COLS_MATERIAIS)
 
@@ -136,104 +136,154 @@ with st.sidebar:
         st.session_state["password_correct"] = False
         st.rerun()
 
-# --- ÁREA 1: CADASTRO DE MATERIAIS (NOVO) ---
-with st.expander("📦 Cadastro de Produtos/Materiais", expanded=False):
-    st.info("Cadastre aqui os materiais para usar nos lançamentos.")
-    with st.form("form_cadastro_material", clear_on_submit=True):
-        c_cod, c_nom, c_un, c_pre = st.columns([1, 3, 1, 1])
-        
-        novo_cod = c_cod.text_input("Código (ex: 101)")
-        novo_nome = c_nom.text_input("Nome do Material (ex: Cimento CP II)")
-        novo_un = c_un.selectbox("Unidade", ["un", "m", "kg", "saco", "m²", "m³", "sc", "lt"])
-        novo_ref = c_pre.number_input("Preço Ref (Opcional)", 0.0)
-        
-        if st.form_submit_button("➕ Cadastrar Material"):
-            if novo_cod and novo_nome:
-                # Verifica duplicidade
-                if not df_materiais.empty and novo_cod in df_materiais['Codigo'].astype(str).values:
-                    st.error("Erro: Código já existe!")
+# ==============================================================================
+# ÁREA DE GESTÃO DE MATERIAIS (CADASTRO E EDIÇÃO)
+# ==============================================================================
+st.subheader("📦 Gestão de Materiais")
+
+col_cad, col_edit = st.columns(2)
+
+# --- 1. CADASTRO NOVO ---
+with col_cad:
+    with st.expander("➕ Cadastrar Novo Material", expanded=True):
+        with st.form("form_cadastro_material", clear_on_submit=True):
+            novo_cod = st.text_input("Código (ex: 101)")
+            novo_nome = st.text_input("Nome do Material")
+            
+            c_un, c_pre = st.columns(2)
+            novo_un = c_un.selectbox("Unidade", ["un", "m", "kg", "saco", "m²", "m³", "sc", "lt"])
+            novo_ref = c_pre.number_input("Preço Ref (Opcional)", 0.0)
+            
+            if st.form_submit_button("Cadastrar"):
+                if novo_cod and novo_nome:
+                    if not df_materiais.empty and str(novo_cod) in df_materiais['Codigo'].astype(str).values:
+                        st.error("Código já existe!")
+                    else:
+                        _, _, ws_mat = pegar_planilhas_escrita()
+                        ws_mat.append_row([novo_cod, novo_nome, novo_un, novo_ref])
+                        st.success("Cadastrado!")
+                        st.cache_data.clear()
+                        time.sleep(1)
+                        st.rerun()
                 else:
-                    _, _, ws_mat = pegar_planilhas_escrita()
-                    ws_mat.append_row([novo_cod, novo_nome, novo_un, novo_ref])
-                    st.success(f"{novo_nome} cadastrado com sucesso!")
-                    st.cache_data.clear()
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.warning("Preencha Código e Nome.")
+                    st.warning("Preencha Código e Nome.")
 
-    if not df_materiais.empty:
-        st.dataframe(df_materiais, use_container_width=True, height=150)
+# --- 2. EDIÇÃO (O QUE VOCÊ PEDIU) ---
+with col_edit:
+    with st.expander("✏️ Editar/Alterar Material Existente", expanded=True):
+        if df_materiais.empty:
+            st.info("Nenhum material cadastrado.")
+        else:
+            # Cria lista para seleção
+            df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
+            lista_edit = df_materiais['Display'].tolist()
+            
+            sel_edit = st.selectbox("Selecione o Material para Editar:", lista_edit)
+            
+            if sel_edit:
+                # Pega os dados atuais do material selecionado
+                cod_atual = sel_edit.split(" - ")[0]
+                linha_dados = df_materiais[df_materiais['Codigo'].astype(str) == cod_atual].iloc[0]
+                
+                # Formulário de Edição
+                with st.form("form_edicao"):
+                    # O código geralmente não se muda, mas o nome sim
+                    st.write(f"**Editando Código:** {cod_atual}")
+                    
+                    novo_nome_edit = st.text_input("Descrição / Nome", value=linha_dados['Nome'])
+                    
+                    c_e1, c_e2 = st.columns(2)
+                    nova_un_edit = c_e1.selectbox("Unidade", ["un", "m", "kg", "saco", "m²", "m³", "sc", "lt"], index=["un", "m", "kg", "saco", "m²", "m³", "sc", "lt"].index(linha_dados['Unidade']) if linha_dados['Unidade'] in ["un", "m", "kg", "saco", "m²", "m³", "sc", "lt"] else 0)
+                    novo_preco_edit = c_e2.number_input("Preço Ref.", value=float(linha_dados['Preco_Ref']) if linha_dados['Preco_Ref'] else 0.0)
+                    
+                    if st.form_submit_button("💾 Salvar Alterações"):
+                        _, _, ws_mat = pegar_planilhas_escrita()
+                        
+                        # Acha a linha no Google Sheets
+                        linha_gs = linha_dados['row_num']
+                        
+                        # Atualiza as colunas (B=Nome, C=Unidade, D=Preço)
+                        ws_mat.update_cell(linha_gs, 2, novo_nome_edit)
+                        ws_mat.update_cell(linha_gs, 3, nova_un_edit)
+                        ws_mat.update_cell(linha_gs, 4, novo_preco_edit)
+                        
+                        st.success(f"Material {cod_atual} atualizado!")
+                        st.cache_data.clear()
+                        time.sleep(1)
+                        st.rerun()
 
-# --- ÁREA 2: DASHBOARD RÁPIDO ---
-if not df_custos.empty and not df_cronograma.empty:
-    orc = df_cronograma['Orcamento'].sum() if 'Orcamento' in df_cronograma.columns else 0
-    real = df_custos['Total'].sum() if 'Total' in df_custos.columns else 0
-    
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Orçamento", f"R$ {orc:,.2f}")
-    k2.metric("Gasto Real", f"R$ {real:,.2f}")
-    k3.metric("Saldo", f"R$ {orc-real:,.2f}", delta=orc-real)
+# --- TABELA DE MATERIAIS CADASTRADOS ---
+if not df_materiais.empty:
+    with st.expander("Ver Todos os Materiais Cadastrados"):
+        st.dataframe(df_materiais[['Codigo', 'Nome', 'Unidade', 'Preco_Ref']], use_container_width=True)
 
-# --- ÁREA 3: LANÇAMENTO DE GASTOS (INTEGRADO) ---
+# --- ÁREA DE LANÇAMENTO ---
 st.divider()
 st.subheader("📝 Lançamento de Despesas")
 
-if df_materiais.empty:
-    st.warning("⚠️ Você precisa cadastrar materiais na aba acima antes de lançar gastos.")
-else:
-    with st.container(border=True):
-        # 1. Seleção Inteligente do Material
-        # Cria uma lista de textos combinando "COD - NOME" para facilitar a busca
-        df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
-        lista_opcoes = df_materiais['Display'].tolist()
-        
-        c_prod, c_det = st.columns([2, 1])
-        
-        with c_prod:
-            # O Selectbox permite digitar para filtrar!
-            escolha = st.selectbox("Buscar Produto (Digite para filtrar):", [""] + lista_opcoes)
-        
-        # Se escolheu algo, pega os dados automaticamente
-        cod_selecionado = ""
-        nome_selecionado = ""
-        un_sugerida = "un"
-        preco_sugerido = 0.0
-        
-        if escolha:
-            # Separa o codigo do nome
-            cod_selecionado = escolha.split(" - ")[0]
-            # Filtra no dataframe para pegar a unidade certa
-            item = df_materiais[df_materiais['Codigo'].astype(str) == cod_selecionado].iloc[0]
-            nome_selecionado = item['Nome']
-            un_sugerida = item['Unidade']
-            preco_sugerido = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
+if not df_materiais.empty:
+    # Lógica de seleção inteligente
+    df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
+    lista_opcoes = df_materiais['Display'].tolist()
+    
+    escolha = st.selectbox("Buscar Produto (Digite para filtrar):", [""] + lista_opcoes)
+    
+    cod_sel, nome_sel, un_sug, preco_sug = "", "", "un", 0.0
+    
+    if escolha:
+        cod_sel = escolha.split(" - ")[0]
+        item = df_materiais[df_materiais['Codigo'].astype(str) == cod_sel].iloc[0]
+        nome_sel = item['Nome']
+        un_sug = item['Unidade']
+        preco_sug = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
 
-        with c_det:
-             st.info(f"Unidade: {un_sugerida} | Ref: R$ {preco_sugerido}")
+    with st.form("form_lancamento", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        dt = c1.date_input("Data")
+        c2.text_input("Material", value=nome_sel, disabled=True)
+        val = c3.number_input("Valor Unitário", min_value=0.0, value=preco_sug)
+        
+        c4, c5 = st.columns(2)
+        qtd = c4.number_input("Quantidade", min_value=0.0, value=1.0)
+        etapa = c5.selectbox("Etapa", df_cronograma['Etapa'].tolist() if not df_cronograma.empty else ["Geral"])
+        
+        if st.form_submit_button("💾 Lançar"):
+            if not escolha:
+                st.error("Selecione um material!")
+            else:
+                ws, _, _ = pegar_planilhas_escrita()
+                ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, val*qtd, "Material", etapa])
+                st.success("Lançado!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
 
-        # Formulário Final
-        with st.form("form_lancamento", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            data_lanc = c1.date_input("Data")
-            
-            # Campos travados para garantir integridade, mas visuais
-            c_desc = c2.text_input("Material", value=nome_selecionado, disabled=True)
-            
-            val_unit = c3.number_input("Valor Pago (Unitário)", min_value=0.0, value=preco_sugerido)
-            
-            c4, c5 = st.columns(2)
-            qtd = c4.number_input("Quantidade", min_value=0.0, value=1.0)
-            
-            lista_etapas = df_cronograma['Etapa'].tolist() if not df_cronograma.empty else ["Geral"]
-            etapa = c5.selectbox("Etapa da Obra", lista_etapas)
-            
-            btn_lancar = st.form_submit_button("💾 Confirmar Lançamento")
-            
-            if btn_lancar:
-                if not escolha:
-                    st.error("Selecione um material da lista!")
-                else:
-                    ws, _, _ = pegar_planilhas_escrita()
-                    total = val_unit * qtd
-                    # Salva: Data, Codigo, Nome, Qtd, Un, Valor, Total,
+# --- HISTÓRICO ---
+st.divider()
+st.subheader("📋 Histórico")
+
+if not df_custos.empty:
+    orc = df_cronograma['Orcamento'].sum() if 'Orcamento' in df_cronograma.columns else 0
+    real = df_custos['Total'].sum() if 'Total' in df_custos.columns else 0
+    st.metric("Saldo da Obra", f"R$ {orc-real:,.2f}", delta=orc-real)
+
+    df_show = df_custos.copy()
+    df_show.insert(0, "Excluir", False)
+    cols = ["Excluir", "Data", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Etapa"]
+    
+    edited = st.data_editor(
+        df_show[[c for c in cols if c in df_show.columns]], 
+        hide_index=True, 
+        use_container_width=True,
+        disabled=["Data", "Descricao", "Total"]
+    )
+    
+    dels = edited[edited["Excluir"]==True]
+    if not dels.empty and st.button("🗑️ Confirmar Exclusão"):
+        ws, _, _ = pegar_planilhas_escrita()
+        rows = df_custos.loc[dels.index, "row_num"].tolist()
+        rows.sort(reverse=True)
+        for r in rows: ws.delete_rows(r)
+        st.success("Apagado!")
+        st.cache_data.clear()
+        st.rerun()
