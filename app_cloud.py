@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from fpdf import FPDF
 from io import BytesIO
 import time
 from datetime import datetime
@@ -62,7 +61,7 @@ def garantir_estrutura(sh):
     if "Orcamento" not in headers:
         ws.update_cell(1, 3, "Orcamento")
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5) # Cache bem curto para atualizar rápido ao adicionar etapas
 def carregar_dados():
     client = conectar_gsheets()
     sh = client.open("Dados_Obra")
@@ -94,26 +93,21 @@ st.title("🏗️ Gestor de Obras")
 
 df_custos, df_cronograma = carregar_dados()
 
-# --- BARRA LATERAL (CRONOGRAMA) ---
+# --- BARRA LATERAL (CRONOGRAMA & GESTÃO) ---
 with st.sidebar:
     st.header("📅 Cronograma")
     
-    # Botão de Sair
-    if st.button("Sair (Logout)"):
-        st.session_state["password_correct"] = False
-        st.rerun()
-    st.divider()
-
+    # 1. VISUALIZAÇÃO DO PROGRESSO
     if not df_cronograma.empty:
-        # Progresso
         concluidos = len(df_cronograma[df_cronograma['Status'] == 'Concluído'])
         total = len(df_cronograma)
         prog = concluidos / total if total > 0 else 0
         st.progress(prog)
-        st.caption(f"{int(prog*100)}% Concluído")
+        st.caption(f"{int(prog*100)}% Concluído ({concluidos}/{total})")
         
-        st.subheader("Etapas")
-        # Checkboxes
+        st.divider()
+        st.subheader("Checklist")
+        # Checkboxes das etapas existentes
         for i, row in df_cronograma.iterrows():
             is_done = (row['Status'] == 'Concluído')
             checked = st.checkbox(row['Etapa'], value=is_done, key=f"check_{i}")
@@ -121,13 +115,49 @@ with st.sidebar:
             if checked != is_done:
                 _, ws_c = pegar_planilha_escrita()
                 ws_c.update_cell(i+2, 2, "Concluído" if checked else "Pendente")
-                st.toast("Atualizado!")
+                st.toast("Status Atualizado!")
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
-    
+    else:
+        st.info("Nenhuma etapa cadastrada.")
+
+    # 2. GERENCIADOR DE ETAPAS (ADICIONAR/REMOVER)
     st.divider()
-    st.info("💡 Dica: Marque as etapas conforme a obra avança.")
+    with st.expander("⚙️ Gerenciar Etapas"):
+        st.write("**Adicionar Nova Etapa**")
+        nova_etapa = st.text_input("Nome da etapa (ex: Pintura)")
+        if st.button("➕ Adicionar"):
+            if nova_etapa:
+                _, ws_c = pegar_planilha_escrita()
+                # Adiciona: Nome, Status Pendente, Orçamento 0
+                ws_c.append_row([nova_etapa, "Pendente", 0])
+                st.success(f"Etapa '{nova_etapa}' criada!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+        
+        st.divider()
+        
+        st.write("**Remover Etapa**")
+        if not df_cronograma.empty:
+            etapa_para_remover = st.selectbox("Selecione para excluir:", df_cronograma['Etapa'].unique())
+            if st.button("🗑️ Excluir"):
+                _, ws_c = pegar_planilha_escrita()
+                try:
+                    cell = ws_c.find(etapa_para_remover)
+                    ws_c.delete_rows(cell.row)
+                    st.success(f"Etapa removida!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                except:
+                    st.error("Erro ao encontrar etapa na planilha.")
+
+    st.divider()
+    if st.button("Sair (Logout)"):
+        st.session_state["password_correct"] = False
+        st.rerun()
 
 # --- TELA PRINCIPAL ---
 
@@ -145,7 +175,22 @@ if not df_cronograma.empty and not df_custos.empty:
     col2.metric("Gasto Realizado", f"R$ {total_gasto:,.2f}")
     col3.metric("Saldo", f"R$ {saldo:,.2f}", delta=saldo)
 
-# 2. FORMULÁRIO DE CADASTRO (Expansível)
+    # Pequeno editor de orçamento na tela principal também
+    with st.expander("💰 Ajustar Metas de Orçamento"):
+        c_ed1, c_ed2, c_btn = st.columns([2,1,1])
+        etapa_meta = c_ed1.selectbox("Etapa", df_cronograma['Etapa'].unique(), key="meta_sel")
+        valor_atual_meta = df_cronograma.loc[df_cronograma['Etapa']==etapa_meta, 'Orcamento'].values[0]
+        nova_meta = c_ed2.number_input("Meta R$", value=float(valor_atual_meta))
+        if c_btn.button("Atualizar"):
+            _, ws_c = pegar_planilha_escrita()
+            cell = ws_c.find(etapa_meta)
+            col_orc = ws_c.find("Orcamento").col
+            ws_c.update_cell(cell.row, col_orc, nova_meta)
+            st.success("Meta atualizada!")
+            st.cache_data.clear()
+            st.rerun()
+
+# 2. FORMULÁRIO DE CADASTRO
 with st.expander("➕ Novo Lançamento de Gasto", expanded=True):
     with st.form("form_gasto", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
@@ -155,12 +200,12 @@ with st.expander("➕ Novo Lançamento de Gasto", expanded=True):
         
         c4, c5, c6 = st.columns(3)
         qtd = c4.number_input("Qtd", 1.0)
-        un = c5.selectbox("Unidade", ["un", "m", "kg", "saco", "dia", "h"])
+        un = c5.selectbox("Unidade", ["un", "m", "kg", "saco", "dia", "h", "vb", "m²", "m³"])
         
         lista_etapas = df_cronograma['Etapa'].tolist() if not df_cronograma.empty else ["Geral"]
         etapa = c6.selectbox("Vincular Etapa", lista_etapas)
         
-        if st.form_submit_button("💾 Salvar"):
+        if st.form_submit_button("💾 Salvar Gasto"):
             ws_1, _ = pegar_planilha_escrita()
             total = qtd * valor
             ws_1.append_row([str(data), desc, qtd, un, valor, total, "Material", "-", etapa])
@@ -168,19 +213,38 @@ with st.expander("➕ Novo Lançamento de Gasto", expanded=True):
             st.cache_data.clear()
             st.rerun()
 
-# 3. TABELA DE DADOS
+# 3. TABELA DE DADOS E EXPORTAÇÃO
 st.divider()
-st.subheader("📋 Histórico de Gastos")
+c_tab, c_exp = st.columns([4, 1])
+with c_tab:
+    st.subheader("📋 Histórico de Gastos")
+with c_exp:
+    # Botão de Exportar PDF
+    from fpdf import FPDF
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 15)
+            self.cell(0, 10, 'Relatorio de Obra', 0, 1, 'C')
+            self.ln(5)
+    
+    def gerar_pdf(df, df_c):
+        pdf = PDF()
+        pdf.add_page()
+        pdf.set_font('Arial', '', 12)
+        pdf.cell(0, 10, f"Gerado: {datetime.now().strftime('%d/%m/%Y')}", 0, 1)
+        if not df.empty:
+            pdf.cell(0, 10, f"Total Gasto: R$ {df['total'].sum():,.2f}", 0, 1)
+        pdf.ln(5)
+        pdf.cell(0, 10, "Etapas:", 0, 1)
+        if not df_c.empty:
+            for _, r in df_c.iterrows():
+                pdf.cell(0, 8, f"- {r['Etapa']}: {r['Status']}", 0, 1)
+        return pdf.output(dest='S').encode('latin-1')
+
+    if st.button("📄 Baixar PDF"):
+        if not df_custos.empty:
+            pdf_bytes = gerar_pdf(df_custos, df_cronograma)
+            st.download_button("Clique p/ Download", pdf_bytes, "relatorio.pdf", "application/pdf")
+
 if not df_custos.empty:
     st.dataframe(df_custos.sort_index(ascending=False), use_container_width=True)
-    
-    # Botão de Download Excel (Discreto)
-    from io import BytesIO
-    def to_excel(df):
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False)
-        return output.getvalue()
-        
-    excel = to_excel(df_custos)
-    st.download_button("📥 Baixar Excel", excel, "obra.xlsx")
