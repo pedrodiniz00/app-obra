@@ -37,7 +37,7 @@ def check_password():
 
 if not check_password(): st.stop()
 
-# --- 2. CONEXÃO ROBUSTA (COM TRATAMENTO DE ERRO) ---
+# --- 2. CONEXÃO ROBUSTA ---
 def limpar_dinheiro(valor):
     if isinstance(valor, (int, float)): return float(valor)
     if isinstance(valor, str):
@@ -60,59 +60,34 @@ def conectar_gsheets():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return gspread.authorize(creds)
 
-# --- FUNÇÃO QUE CRIA AS ABAS UMA POR UMA ---
 def garantir_abas(sh):
-    """Verifica e cria abas com pausa para evitar bloqueio do Google"""
-    
-    # Lista do que precisamos
     mapa = {
         "Cronograma": COLS_CRONO,
         "Materiais": COLS_MATERIAIS,
         "Fornecedores": COLS_FORNECEDORES,
         "Pontos_Criticos": COLS_PONTOS
     }
-    
-    # Pega o que já tem
-    try:
-        existentes = {ws.title: ws for ws in sh.worksheets()}
-    except Exception as e:
-        st.error(f"Erro ao ler abas: {e}")
-        st.stop()
+    try: existentes = {ws.title: ws for ws in sh.worksheets()}
+    except: return False
 
-    # Verifica uma por uma
     for nome, cols in mapa.items():
         if nome not in existentes:
             try:
-                with st.spinner(f"Configurando aba: {nome}... (Aguarde)"):
-                    ws = sh.add_worksheet(nome, 100, len(cols))
-                    ws.append_row(cols)
-                    time.sleep(3) # Pausa de 3 segundos entre criações (CRUCIAL)
-            except Exception as e:
-                st.warning(f"Não foi possível criar a aba {nome}. Erro: {e}")
-                time.sleep(5) # Se der erro, espera 5s e segue
-
+                ws = sh.add_worksheet(nome, 100, len(cols))
+                ws.append_row(cols)
+                time.sleep(2)
+            except: pass
     return True
 
-# --- CARREGAMENTO DE DADOS ---
 def pegar_dados_seguro():
     client = conectar_gsheets()
-    
-    # Tenta abrir a planilha
-    try:
-        sh = client.open("Dados_Obra")
-    except gspread.SpreadsheetNotFound:
-        st.error("❌ ERRO: Não encontrei a planilha 'Dados_Obra'. Verifique o nome no Google Sheets.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ ERRO DE CONEXÃO: {e}")
-        if "429" in str(e):
-            st.info("⏳ O Google bloqueou por excesso de velocidade. Espere 1 minuto e recarregue a página.")
+    try: sh = client.open("Dados_Obra")
+    except: 
+        st.error("Planilha 'Dados_Obra' não encontrada.")
         st.stop()
     
-    # Garante estrutura
     garantir_abas(sh)
     
-    # Retorna as abas
     return (
         sh.sheet1,
         sh.worksheet("Cronograma"),
@@ -121,22 +96,20 @@ def pegar_dados_seguro():
         sh.worksheet("Pontos_Criticos")
     )
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def carregar_dfs():
-    # Essa função encapsula a leitura para usar cache
     ws1, wsc, wsm, wsf, wsp = pegar_dados_seguro()
     
-    def ler_ws(ws):
+    def ler(ws):
         try: return pd.DataFrame(ws.get_all_records())
         except: return pd.DataFrame()
 
-    df_custos = ler_ws(ws1)
-    df_crono = ler_ws(wsc)
-    df_mat = ler_ws(wsm)
-    df_forn = ler_ws(wsf)
-    df_pontos = ler_ws(wsp)
+    df_custos = ler(ws1)
+    df_crono = ler(wsc)
+    df_mat = ler(wsm)
+    df_forn = ler(wsf)
+    df_pontos = ler(wsp)
     
-    # Tratamentos básicos
     if not df_custos.empty:
         df_custos['row_num'] = df_custos.index + 2
         if 'Fornecedor' not in df_custos.columns: df_custos['Fornecedor'] = "-"
@@ -156,18 +129,16 @@ def carregar_dfs():
 # --- 4. INTERFACE ---
 st.title("🏗️ Gestor de Obras ERP")
 
-# Sidebar de Reset (SALVA VIDAS)
 with st.sidebar:
-    if st.button("🔄 Reiniciar Conexão (Reset)"):
+    st.success("Sistema Online 🟢")
+    if st.button("🔄 Atualizar Dados"):
         st.cache_data.clear()
-        st.cache_resource.clear()
         st.rerun()
-    st.info("Se der erro, clique no botão acima.")
+    st.divider()
     if st.button("Sair"):
         st.session_state["password_correct"] = False
         st.rerun()
 
-# Carrega tudo
 df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos = carregar_dfs()
 
 # TABS
@@ -209,7 +180,6 @@ with tab_lancamento:
                 if not escolha: st.error("Escolha um produto")
                 else:
                     ws, _, _, _, _ = pegar_dados_seguro()
-                    # Verifica cabeçalho rapidinho
                     if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
                     
                     ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, val*qtd, "Material", etapa, escolha_forn])
@@ -217,7 +187,7 @@ with tab_lancamento:
                     st.cache_data.clear()
                     st.rerun()
 
-# --- TAB 2: CRONOGRAMA ---
+# --- TAB 2: CRONOGRAMA (COM EDIÇÃO) ---
 with tab_cronograma:
     c_new, c_list = st.columns([1, 2])
     with c_new:
@@ -235,22 +205,29 @@ with tab_cronograma:
     st.divider()
     if not df_cronograma.empty:
         for i, row in df_cronograma.iterrows():
-            nome = row['Etapa']
+            nome_atual = row['Etapa']
             pct = int(row.get('Porcentagem', 0))
+            orc_atual = float(row.get('Orcamento', 0))
             
-            with st.expander(f"📌 {nome} ({pct}%) | Meta: R$ {row.get('Orcamento',0):,.2f}"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    novo_pct = st.slider(f"Progresso {nome}", 0, 100, pct, key=f"s_{i}")
+            # EXPANDER DA ETAPA
+            with st.expander(f"📌 {nome_atual} ({pct}%) | Meta: R$ {orc_atual:,.2f}"):
+                
+                # ABAS DENTRO DA ETAPA (Progresso vs Edição)
+                t_prog, t_check, t_edit = st.tabs(["📊 Progresso", "✅ Checklist", "✏️ Editar/Excluir"])
+                
+                # 1. PROGRESSO
+                with t_prog:
+                    novo_pct = st.slider(f"Executado", 0, 100, pct, key=f"s_{i}")
                     if novo_pct != pct:
                         _, ws, _, _, _ = pegar_dados_seguro()
                         ws.update_cell(row['row_num'], 4, novo_pct)
                         st.cache_data.clear()
                         st.rerun()
-                with c2:
-                    st.write("**Checklist**")
+
+                # 2. CHECKLIST
+                with t_check:
                     if not df_pontos.empty:
-                        pts = df_pontos[df_pontos['Etapa_Pai']==nome]
+                        pts = df_pontos[df_pontos['Etapa_Pai']==nome_atual]
                         for idx, p in pts.iterrows():
                             chk = st.checkbox(p['Descricao'], value=(str(p['Feito']).upper()=='TRUE'), key=f"pk_{p['row_num']}")
                             if chk != (str(p['Feito']).upper()=='TRUE'):
@@ -263,8 +240,52 @@ with tab_cronograma:
                         pt_txt = st.text_input("Novo Ponto")
                         if st.form_submit_button("Add"):
                             _, _, _, _, wsp = pegar_dados_seguro()
-                            wsp.append_row([nome, pt_txt, "FALSE"])
+                            wsp.append_row([nome_atual, pt_txt, "FALSE"])
                             st.cache_data.clear()
+                            st.rerun()
+
+                # 3. EDIÇÃO (NOVA FUNCIONALIDADE)
+                with t_edit:
+                    st.warning("⚠️ Editar o nome atualizará todos os custos vinculados.")
+                    with st.form(f"edit_etapa_{i}"):
+                        nome_edit = st.text_input("Nome da Etapa", value=nome_atual)
+                        orc_edit = st.number_input("Orçamento", value=orc_atual)
+                        
+                        col_save, col_del = st.columns(2)
+                        
+                        if col_save.form_submit_button("💾 Salvar Alterações"):
+                            ws_custos, ws_crono, _, _, _ = pegar_dados_seguro()
+                            
+                            # 1. Atualiza na aba Cronograma
+                            ws_crono.update_cell(row['row_num'], 1, nome_edit) # Col 1 = Nome
+                            ws_crono.update_cell(row['row_num'], 3, orc_edit)  # Col 3 = Orcamento
+                            
+                            # 2. Atualiza os custos antigos (Procura e Substitui)
+                            if nome_edit != nome_atual and not df_custos.empty:
+                                try:
+                                    # Procura todas as celulas com nome antigo na aba Custos e troca
+                                    cell_list = ws_custos.findall(nome_atual)
+                                    for cell in cell_list:
+                                        # Verifica se é a coluna de etapa (Coluna I = 9)
+                                        if cell.col == 9: 
+                                            cell.value = nome_edit
+                                    if cell_list:
+                                        ws_custos.update_cells(cell_list)
+                                        st.success(f"Histórico atualizado de '{nome_atual}' para '{nome_edit}'")
+                                except Exception as e:
+                                    st.warning(f"Erro ao atualizar histórico: {e}")
+
+                            st.success("Etapa atualizada!")
+                            st.cache_data.clear()
+                            time.sleep(1)
+                            st.rerun()
+
+                        if col_del.form_submit_button("🗑️ Excluir Etapa", type="primary"):
+                            _, ws_crono, _, _, _ = pegar_dados_seguro()
+                            ws_crono.delete_rows(row['row_num'])
+                            st.success("Etapa Excluída!")
+                            st.cache_data.clear()
+                            time.sleep(1)
                             st.rerun()
 
 # --- TAB 3: CADASTROS ---
@@ -336,6 +357,7 @@ with tab_historico:
             st.success("Feito!")
             st.cache_data.clear()
             st.rerun()
+
 
 
 
