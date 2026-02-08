@@ -268,10 +268,15 @@ with tab_cronograma:
                     if not df_pontos.empty:
                         pontos_etapa = df_pontos[df_pontos['Etapa_Pai'] == nome]
                         for idx_p, row_p in pontos_etapa.iterrows():
+                            # Converte string 'TRUE'/'FALSE' para bool
                             is_checked = str(row_p['Feito']).upper() == 'TRUE'
+                            
+                            # Checkbox com chave única
                             check = st.checkbox(row_p['Descricao'], value=is_checked, key=f"chk_{row_p['row_num']}")
+                            
                             if check != is_checked:
                                 _, _, _, _, ws_p = pegar_planilhas_escrita()
+                                # Atualiza coluna 3 (Feito)
                                 ws_p.update_cell(row_p['row_num'], 3, "TRUE" if check else "FALSE")
                                 st.cache_data.clear()
                                 st.rerun()
@@ -379,6 +384,7 @@ with tab_historico:
             st.success("Apagado!")
             st.cache_data.clear()
             st.rerun()
+
 
 
 
