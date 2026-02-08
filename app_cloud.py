@@ -106,4 +106,239 @@ def carregar_dados_completo():
         df_materiais = pd.DataFrame(vals_m)
         if df_materiais.empty: df_materiais = pd.DataFrame(columns=COLS_MATERIAIS)
         df_materiais['row_num'] = df_materiais.index + 2
-    except: df_materiais = pd.DataFrame(columns=COLS_MATER
+    except: df_materiais = pd.DataFrame(columns=COLS_MATERIAIS)
+
+    # 4. FORNECEDORES
+    try:
+        ws_f = sh.worksheet("Fornecedores")
+        vals_f = ws_f.get_all_records()
+        df_fornecedores = pd.DataFrame(vals_f)
+        if df_fornecedores.empty: df_fornecedores = pd.DataFrame(columns=COLS_FORNECEDORES)
+        df_fornecedores['row_num'] = df_fornecedores.index + 2
+    except: df_fornecedores = pd.DataFrame(columns=COLS_FORNECEDORES)
+
+    return df_custos, df_crono, df_materiais, df_fornecedores
+
+# --- 3. INTERFACE ---
+st.title("🏗️ Gestor de Obras ERP")
+df_custos, df_cronograma, df_materiais, df_fornecedores = carregar_dados_completo()
+
+# --- MENU LATERAL ---
+with st.sidebar:
+    st.header("📅 Cronograma")
+    if not df_cronograma.empty:
+        total = len(df_cronograma)
+        feitos = len(df_cronograma[df_cronograma['Status']=='Concluído'])
+        st.progress(feitos/total if total>0 else 0)
+        
+        st.write("---")
+        for i, row in df_cronograma.iterrows():
+            nome = row.get('Etapa', f'Etapa {i}')
+            status = row.get('Status', 'Pendente')
+            check = st.checkbox(nome, value=(status=='Concluído'), key=f"c_{i}")
+            if check != (status=='Concluído'):
+                _, ws_c, _, _ = pegar_planilhas_escrita()
+                ws_c.update_cell(i+2, 2, "Concluído" if check else "Pendente")
+                st.cache_data.clear()
+                st.rerun()
+
+    st.divider()
+    if st.button("Sair"):
+        st.session_state["password_correct"] = False
+        st.rerun()
+
+# ==============================================================================
+# ABA 1: GESTÃO DE MATERIAIS
+# ==============================================================================
+st.subheader("📦 Materiais & Produtos")
+with st.expander("Gerenciar Materiais (Cadastro/Edição)", expanded=False):
+    col_cad_mat, col_edit_mat = st.columns(2)
+    
+    with col_cad_mat:
+        st.write("**Novo Material**")
+        with st.form("form_mat"):
+            cod = st.text_input("Código (ex: 101)")
+            nome = st.text_input("Nome")
+            c1, c2 = st.columns(2)
+            un = c1.selectbox("Un", ["un","m","kg","sc","m²","m³"])
+            ref = c2.number_input("R$ Ref", 0.0)
+            if st.form_submit_button("Cadastrar Material"):
+                if cod and nome:
+                    _, _, ws_m, _ = pegar_planilhas_escrita()
+                    ws_m.append_row([cod, nome, un, ref])
+                    st.success("Salvo!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+    
+    with col_edit_mat:
+        st.write("**Editar Material**")
+        if not df_materiais.empty:
+            df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
+            sel = st.selectbox("Selecione:", df_materiais['Display'].tolist(), key="sel_mat_edit")
+            if sel:
+                cod_atual = sel.split(" - ")[0]
+                dado = df_materiais[df_materiais['Codigo'].astype(str)==cod_atual].iloc[0]
+                with st.form("edit_mat"):
+                    novo_nome = st.text_input("Nome", value=dado['Nome'])
+                    c_e1, c_e2 = st.columns(2)
+                    nova_un = c_e1.selectbox("Unidade", ["un","m","kg","sc","m²","m³"], index=0)
+                    novo_preco = c_e2.number_input("Preço", value=float(dado['Preco_Ref']) if dado['Preco_Ref'] else 0.0)
+                    if st.form_submit_button("Salvar Edição"):
+                        _, _, ws_m, _ = pegar_planilhas_escrita()
+                        ws_m.update_cell(dado['row_num'], 2, novo_nome)
+                        ws_m.update_cell(dado['row_num'], 3, nova_un)
+                        ws_m.update_cell(dado['row_num'], 4, novo_preco)
+                        st.success("Atualizado!")
+                        st.cache_data.clear()
+                        time.sleep(1)
+                        st.rerun()
+
+# ==============================================================================
+# ABA 2: GESTÃO DE FORNECEDORES
+# ==============================================================================
+st.subheader("🏭 Fornecedores & Parceiros")
+with st.expander("Gerenciar Fornecedores (Cadastro/Edição)", expanded=False):
+    col_cad_forn, col_edit_forn = st.columns(2)
+    
+    with col_cad_forn:
+        st.write("**Novo Fornecedor**")
+        with st.form("form_forn"):
+            f_cod = st.text_input("Cód/CNPJ (ex: F01)")
+            f_nome = st.text_input("Nome da Empresa")
+            c_f1, c_f2 = st.columns(2)
+            f_tel = c_f1.text_input("Telefone")
+            f_cat = c_f2.selectbox("Categoria", ["Material", "Mão de Obra", "Equipamento", "Serviço"])
+            if st.form_submit_button("Cadastrar Fornecedor"):
+                if f_cod and f_nome:
+                    _, _, _, ws_f = pegar_planilhas_escrita()
+                    ws_f.append_row([f_cod, f_nome, f_tel, f_cat])
+                    st.success(f"{f_nome} cadastrado!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                else: st.warning("Preencha Código e Nome.")
+
+    with col_edit_forn:
+        st.write("**Editar Fornecedor**")
+        if not df_fornecedores.empty:
+            df_fornecedores['Display'] = df_fornecedores['Codigo'].astype(str) + " - " + df_fornecedores['Nome']
+            sel_forn = st.selectbox("Selecione:", df_fornecedores['Display'].tolist(), key="sel_forn_edit")
+            if sel_forn:
+                cod_f_atual = sel_forn.split(" - ")[0]
+                dado_f = df_fornecedores[df_fornecedores['Codigo'].astype(str)==cod_f_atual].iloc[0]
+                with st.form("edit_forn"):
+                    novo_nome_f = st.text_input("Nome", value=dado_f['Nome'])
+                    c_fe1, c_fe2 = st.columns(2)
+                    novo_tel_f = c_fe1.text_input("Telefone", value=dado_f['Telefone'])
+                    cats = ["Material", "Mão de Obra", "Equipamento", "Serviço"]
+                    idx_cat = cats.index(dado_f['Categoria']) if dado_f['Categoria'] in cats else 0
+                    nova_cat_f = c_fe2.selectbox("Categoria", cats, index=idx_cat)
+                    if st.form_submit_button("Salvar Fornecedor"):
+                        _, _, _, ws_f = pegar_planilhas_escrita()
+                        linha = dado_f['row_num']
+                        ws_f.update_cell(linha, 2, novo_nome_f)
+                        ws_f.update_cell(linha, 3, novo_tel_f)
+                        ws_f.update_cell(linha, 4, nova_cat_f)
+                        st.success("Fornecedor atualizado!")
+                        st.cache_data.clear()
+                        time.sleep(1)
+                        st.rerun()
+
+# --- ÁREA DE LANÇAMENTO ---
+st.divider()
+st.subheader("📝 Lançamento de Despesas")
+
+if df_materiais.empty:
+    st.warning("Cadastre materiais primeiro.")
+else:
+    # Filtro Material
+    df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
+    escolha = st.selectbox("Produto:", [""] + df_materiais['Display'].tolist())
+    
+    # Filtro Fornecedor
+    lista_forn = ["Sem Fornecedor"]
+    if not df_fornecedores.empty:
+        lista_forn += df_fornecedores['Nome'].tolist()
+    escolha_forn = st.selectbox("Fornecedor (Opcional):", lista_forn)
+
+    cod_sel, nome_sel, un_sug, preco_sug = "", "", "un", 0.0
+    if escolha:
+        cod_sel = escolha.split(" - ")[0]
+        item = df_materiais[df_materiais['Codigo'].astype(str) == cod_sel].iloc[0]
+        nome_sel = item['Nome']
+        un_sug = item['Unidade']
+        preco_sug = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
+
+    with st.form("lancar_gasto"):
+        c1, c2, c3 = st.columns(3)
+        dt = c1.date_input("Data")
+        c2.text_input("Item", value=nome_sel, disabled=True)
+        val = c3.number_input("Valor Unit", value=preco_sug)
+        
+        c4, c5 = st.columns(2)
+        qtd = c4.number_input("Qtd", 1.0)
+        etapa = c5.selectbox("Etapa", df_cronograma['Etapa'].tolist() if not df_cronograma.empty else ["Geral"])
+        
+        if st.form_submit_button("💾 Lançar Gasto"):
+            if not escolha:
+                st.error("Escolha um material!")
+            else:
+                ws, _, _, _ = pegar_planilhas_escrita()
+                total = val * qtd
+                fornecedor_txt = escolha_forn if escolha_forn != "Sem Fornecedor" else "-"
+                ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, total, "Material", etapa, fornecedor_txt])
+                st.success("Lançado!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+
+# ==============================================================================
+# HISTÓRICO REORGANIZADO (AQUI ESTÁ A MUDANÇA)
+# ==============================================================================
+st.divider()
+st.subheader("📋 Histórico Geral")
+
+if not df_custos.empty:
+    # Garante que as colunas existem para não dar erro
+    if 'Fornecedor' not in df_custos.columns:
+        df_custos['Fornecedor'] = "-"
+    
+    df_show = df_custos.copy()
+    df_show.insert(0, "Excluir", False)
+    
+    # ---------------------------------------------------------
+    # ORDEM SOLICITADA: EXCLUIR | DATA | FORNECEDOR | MATERIAL | UN | VALOR | TOTAL
+    # ---------------------------------------------------------
+    cols_order = ["Excluir", "Data", "Fornecedor", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Etapa"]
+    
+    # Filtra colunas que realmente existem no dataframe para evitar crash
+    cols_final = [c for c in cols_order if c in df_show.columns]
+    
+    edited = st.data_editor(
+        df_show[cols_final], 
+        hide_index=True, 
+        use_container_width=True,
+        column_config={
+            "Excluir": st.column_config.CheckboxColumn("Del?", width="small"),
+            "Descricao": st.column_config.TextColumn("Material"), # Renomeando visualmente
+            "Valor": st.column_config.NumberColumn("Valor Un", format="R$ %.2f"),
+            "Total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
+        },
+        disabled=["Data", "Fornecedor", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Etapa"]
+    )
+    
+    # Lógica de Exclusão
+    dels = edited[edited["Excluir"]==True]
+    if not dels.empty:
+        st.warning(f"{len(dels)} itens selecionados para exclusão.")
+        if st.button("Confirmar Exclusão"):
+            ws, _, _, _ = pegar_planilhas_escrita()
+            rows = df_custos.loc[dels.index, "row_num"].tolist()
+            rows.sort(reverse=True)
+            for r in rows: ws.delete_rows(r)
+            st.success("Apagado!")
+            st.cache_data.clear()
+            st.rerun()
+
