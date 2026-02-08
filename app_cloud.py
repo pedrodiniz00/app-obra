@@ -38,21 +38,16 @@ if not check_password():
     st.stop()
 
 # ==============================================================================
-# 2. CONEXÃO GOOGLE SHEETS (COM CORREÇÃO DE ERROS)
+# 2. CONEXÃO E CORREÇÃO DE PLANILHA (O SEGREDO ESTÁ AQUI)
 # ==============================================================================
 def limpar_dinheiro(valor):
-    """Converte texto de dinheiro para numero float de forma segura."""
     if valor is None: return 0.0
     if isinstance(valor, (int, float)): return float(valor)
-    
-    # Se for texto, limpa
     if isinstance(valor, str):
-        if not valor.strip(): return 0.0 # Se estiver vazio, retorna 0
         try:
             limpo = valor.replace('R$', '').replace('.', '').replace(',', '.').strip()
             return float(limpo) if limpo else 0.0
-        except:
-            return 0.0 # Se falhar, retorna 0
+        except: return 0.0
     return 0.0
 
 @st.cache_resource
@@ -62,8 +57,41 @@ def conectar_gsheets():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"🚨 Erro Fatal de Conexão: {e}")
+        st.error(f"Erro de Conexão: {e}")
         return None
+
+def corrigir_cabecalhos(ws, tipo):
+    """Verifica se a linha 1 está certa. Se não estiver, cria o cabeçalho."""
+    try:
+        cabecalho_atual = ws.row_values(1)
+        
+        # Definição dos cabeçalhos corretos
+        if tipo == "custos":
+            cols_corretas = ['data', 'descricao', 'quantidade', 'unidade', 'valor_un', 'total', 'classe', 'subclasse', 'etapa']
+        else: # cronograma
+            cols_corretas = ['Etapa', 'Status', 'Orcamento']
+
+        # Se a linha 1 estiver vazia OU tiver números (ex: o erro '10'), REFAZ
+        precisa_corrigir = False
+        if not cabecalho_atual:
+            precisa_corrigir = True
+        else:
+            # Se a primeira célula for um número ou data, é sinal que o cabeçalho sumiu
+            prim_cel = str(cabecalho_atual[0])
+            if any(char.isdigit() for char in prim_cel): 
+                precisa_corrigir = True
+            # Se não tiver as colunas essenciais
+            elif tipo == "custos" and "total" not in cabecalho_atual:
+                precisa_corrigir = True
+        
+        if precisa_corrigir:
+            st.toast(f"Corrigindo cabeçalho da aba {tipo}...", icon="🔧")
+            # Insere a linha de cabeçalho na posição 1, empurrando o resto para baixo
+            ws.insert_row(cols_corretas, index=1)
+            return True
+    except:
+        pass
+    return False
 
 def pegar_planilha_escrita():
     client = conectar_gsheets()
@@ -77,46 +105,42 @@ def carregar_dados():
     
     try:
         sh = client.open("Dados_Obra")
-    except Exception as e:
-        st.error(f"❌ Não encontrei a planilha 'Dados_Obra'. Verifique o nome no Google Sheets. Erro: {e}")
+    except:
         return pd.DataFrame(), pd.DataFrame()
 
     # --- CUSTOS ---
     try:
         ws_custos = sh.sheet1
-        dados_raw = ws_custos.get_all_records()
-        df_custos = pd.DataFrame(dados_raw)
+        # AUTO-CORREÇÃO ANTES DE LER
+        corrigir_cabecalhos(ws_custos, "custos")
         
-        # Limpeza de colunas numéricas
+        dados = ws_custos.get_all_records()
+        df_custos = pd.DataFrame(dados)
+        
+        # Limpa dinheiro
         if not df_custos.empty:
-            cols_dinheiro = ['total', 'valor_un', 'quantidade']
-            for col in cols_dinheiro:
-                if col in df_custos.columns:
-                    df_custos[col] = df_custos[col].apply(limpar_dinheiro)
-    except Exception as e:
-        st.warning(f"⚠️ Erro ao ler aba de Custos (sheet1): {e}")
-        df_custos = pd.DataFrame()
+            for c in ['total', 'valor_un', 'quantidade']:
+                if c in df_custos.columns:
+                    df_custos[c] = df_custos[c].apply(limpar_dinheiro)
+    except: df_custos = pd.DataFrame()
 
     # --- CRONOGRAMA ---
     try:
         ws_crono = sh.worksheet("Cronograma")
-        dados_crono = ws_crono.get_all_records()
-        df_crono = pd.DataFrame(dados_crono)
+        corrigir_cabecalhos(ws_crono, "cronograma")
         
-        # Limpeza
+        dados_c = ws_crono.get_all_records()
+        df_crono = pd.DataFrame(dados_c)
+        
         if not df_crono.empty and 'Orcamento' in df_crono.columns:
             df_crono['Orcamento'] = df_crono['Orcamento'].apply(limpar_dinheiro)
-            
-    except Exception as e:
-        # Se a aba não existe, tenta criar
+    except:
+        # Se não existir, cria
         try:
             ws_crono = sh.add_worksheet("Cronograma", 20, 5)
-            ws_crono.append_row(["Etapa", "Status", "Orcamento"])
-            st.toast("Aba Cronograma criada automaticamente!")
+            ws_crono.append_row(['Etapa', 'Status', 'Orcamento'])
             df_crono = pd.DataFrame()
-        except:
-            st.warning(f"⚠️ Erro ao ler aba Cronograma: {e}")
-            df_crono = pd.DataFrame()
+        except: df_crono = pd.DataFrame()
         
     return df_custos, df_crono
 
@@ -124,16 +148,12 @@ def carregar_dados():
 # 3. INTERFACE
 # ==============================================================================
 st.title("🏗️ Gestor de Obras")
-
 df_custos, df_cronograma = carregar_dados()
 
-# --- BARRA LATERAL ---
+# BARRA LATERAL
 with st.sidebar:
     st.header("📅 Cronograma")
-    
-    if df_cronograma.empty:
-        st.warning("Cronograma vazio ou não carregado.")
-    else:
+    if not df_cronograma.empty:
         # Progresso
         total = len(df_cronograma)
         concluidos = len(df_cronograma[df_cronograma['Status'] == 'Concluído'])
@@ -142,24 +162,19 @@ with st.sidebar:
         st.caption(f"{int(prog*100)}% Concluído")
         
         st.divider()
-        st.subheader("Checklist")
-        
-        # Checkboxes
+        # Checklist
         for i, row in df_cronograma.iterrows():
-            nome_etapa = row['Etapa'] if 'Etapa' in row else f"Etapa {i}"
-            status_atual = row['Status'] if 'Status' in row else "Pendente"
-            is_done = (status_atual == 'Concluído')
+            nome = row['Etapa'] if 'Etapa' in row else f"Etapa {i}"
+            status = row['Status'] if 'Status' in row else "Pendente"
+            is_done = (status == 'Concluído')
             
-            checked = st.checkbox(nome_etapa, value=is_done, key=f"c_{i}")
-            
-            if checked != is_done:
+            if st.checkbox(nome, value=is_done, key=f"ck_{i}") != is_done:
                 _, ws_c = pegar_planilha_escrita()
-                ws_c.update_cell(i+2, 2, "Concluído" if checked else "Pendente")
-                st.toast("Atualizado!")
+                ws_c.update_cell(i+2, 2, "Concluído" if not is_done else "Pendente")
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
-
+    
     # Gestão de Etapas
     st.divider()
     with st.expander("⚙️ Gerenciar Etapas"):
@@ -168,44 +183,42 @@ with st.sidebar:
             if nova:
                 _, ws_c = pegar_planilha_escrita()
                 ws_c.append_row([nova, "Pendente", 0])
-                st.success("Adicionado!")
+                st.success("Criado!")
                 st.cache_data.clear()
                 st.rerun()
         
         if not df_cronograma.empty and 'Etapa' in df_cronograma.columns:
             st.write("---")
-            rem = st.selectbox("Remover:", df_cronograma['Etapa'].unique())
+            rem = st.selectbox("Apagar:", df_cronograma['Etapa'].unique())
             if st.button("🗑️ Excluir"):
                 _, ws_c = pegar_planilha_escrita()
                 try:
                     cell = ws_c.find(rem)
                     ws_c.delete_rows(cell.row)
-                    st.success("Removido!")
+                    st.success("Apagado!")
                     st.cache_data.clear()
                     st.rerun()
-                except: st.error("Erro ao excluir.")
-
+                except: pass
+                
     st.divider()
     if st.button("Sair"):
         st.session_state["password_correct"] = False
         st.rerun()
 
-# --- PRINCIPAL ---
+# KPIs PRINCIPAIS
 if not df_cronograma.empty and not df_custos.empty:
-    col1, col2, col3 = st.columns(3)
+    orc = df_cronograma['Orcamento'].sum() if 'Orcamento' in df_cronograma.columns else 0
+    real = df_custos['total'].sum() if 'total' in df_custos.columns else 0
+    saldo = orc - real
     
-    # Cálculos seguros
-    total_orc = df_cronograma['Orcamento'].sum() if 'Orcamento' in df_cronograma.columns else 0
-    total_real = df_custos['total'].sum() if 'total' in df_custos.columns else 0
-    saldo = total_orc - total_real
-    
-    col1.metric("Meta (Orçamento)", f"R$ {total_orc:,.2f}")
-    col2.metric("Gasto Real", f"R$ {total_real:,.2f}")
-    col3.metric("Saldo", f"R$ {saldo:,.2f}", delta=saldo)
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Orçamento", f"R$ {orc:,.2f}")
+    k2.metric("Gasto Real", f"R$ {real:,.2f}")
+    k3.metric("Saldo", f"R$ {saldo:,.2f}", delta=saldo)
 
-# Formulário
-with st.expander("➕ Lançar Gasto", expanded=True):
-    with st.form("add_gasto", clear_on_submit=True):
+# FORMULÁRIO
+with st.expander("➕ Novo Gasto", expanded=True):
+    with st.form("gasto_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         dt = c1.date_input("Data")
         desc = c2.text_input("Descrição")
@@ -218,7 +231,7 @@ with st.expander("➕ Lançar Gasto", expanded=True):
         opts = df_cronograma['Etapa'].tolist() if not df_cronograma.empty and 'Etapa' in df_cronograma.columns else ["Geral"]
         etapa = c6.selectbox("Etapa", opts)
         
-        if st.form_submit_button("Salvar"):
+        if st.form_submit_button("💾 Salvar"):
             ws1, _ = pegar_planilha_escrita()
             total = val * qtd
             ws1.append_row([str(dt), desc, qtd, un, val, total, "Material", "-", etapa])
@@ -226,26 +239,35 @@ with st.expander("➕ Lançar Gasto", expanded=True):
             st.cache_data.clear()
             st.rerun()
 
-# Tabela e PDF
+# TABELA
 st.divider()
-c_txt, c_pdf = st.columns([4,1])
-c_txt.subheader("Histórico")
+col_txt, col_pdf = st.columns([4, 1])
+col_txt.subheader("Histórico")
 
-with c_pdf:
+with col_pdf:
     if st.button("📄 PDF"):
         if not df_custos.empty:
-            # Lógica PDF simplificada inline
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Arial", "B", 16)
             pdf.cell(0, 10, "Relatorio de Obra", 0, 1, "C")
             pdf.set_font("Arial", "", 12)
             pdf.ln(10)
+            
+            # Resumo
             pdf.cell(0, 10, f"Total Gasto: R$ {df_custos['total'].sum():,.2f}", 0, 1)
+            pdf.ln(5)
+            
+            # Etapas
+            pdf.cell(0, 10, "Etapas:", 0, 1)
+            if not df_cronograma.empty:
+                for _, r in df_cronograma.iterrows():
+                    e = r['Etapa'] if 'Etapa' in r else '?'
+                    s = r['Status'] if 'Status' in r else '?'
+                    pdf.cell(0, 8, f"- {e}: {s}", 0, 1)
+                    
             pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            st.download_button("Baixar", pdf_bytes, "relatorio.pdf", "application/pdf")
+            st.download_button("Download", pdf_bytes, "relatorio.pdf", "application/pdf")
 
 if not df_custos.empty:
     st.dataframe(df_custos.sort_index(ascending=False), use_container_width=True)
-elif not df_cronograma.empty:
-    st.info("Nenhum custo lançado ainda.")
