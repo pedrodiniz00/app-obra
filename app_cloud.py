@@ -37,7 +37,7 @@ def check_password():
 
 if not check_password(): st.stop()
 
-# --- 2. CONEXÃO E FUNÇÕES AUXILIARES ---
+# --- 2. CONEXÃO ---
 def limpar_dinheiro(valor):
     if isinstance(valor, (int, float)): return float(valor)
     if isinstance(valor, str):
@@ -60,43 +60,47 @@ def conectar_gsheets():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return gspread.authorize(creds)
 
-# --- 3. FUNÇÃO DE AUTO-REPARO (A CURA DO ERRO) ---
+# --- 3. INICIALIZAÇÃO SEGURA (A CURA DO ERRO) ---
+# Esta função roda APENAS no início para garantir que as abas existem
 def inicializar_sistema():
-    """Verifica se todas as abas existem. Se não, cria. Roda no início."""
     client = conectar_gsheets()
     try:
         sh = client.open("Dados_Obra")
     except:
-        st.error("ERRO CRÍTICO: Não encontrei a planilha 'Dados_Obra'. Crie ela no Google Sheets primeiro.")
+        st.error("❌ Erro: Não encontrei a planilha 'Dados_Obra'.")
         st.stop()
-    
-    # Lista de abas necessárias e suas colunas
-    abas_necessarias = {
+        
+    # Mapa de abas necessárias
+    mapa_abas = {
         "Cronograma": COLS_CRONO,
         "Materiais": COLS_MATERIAIS,
         "Fornecedores": COLS_FORNECEDORES,
         "Pontos_Criticos": COLS_PONTOS
     }
     
-    worksheets = {ws.title: ws for ws in sh.worksheets()}
+    # Pega lista de abas existentes
+    abas_existentes = {ws.title: ws for ws in sh.worksheets()}
     
-    for nome_aba, colunas in abas_necessarias.items():
-        if nome_aba not in worksheets:
-            with st.spinner(f"Criando aba {nome_aba}..."):
-                sh.add_worksheet(nome_aba, 100, len(colunas))
-                # Pega a aba recém criada
-                ws_nova = sh.worksheet(nome_aba)
-                ws_nova.append_row(colunas)
-                time.sleep(2) # PAUSA IMPORTANTE PARA O GOOGLE NÃO BLOQUEAR
+    for nome, colunas in mapa_abas.items():
+        if nome not in abas_existentes:
+            try:
+                # Cria a aba
+                ws = sh.add_worksheet(nome, 100, len(colunas))
+                # Adiciona cabeçalho
+                ws.append_row(colunas)
+                # PAUSA OBRIGATÓRIA PARA NÃO DAR ERRO DE API
+                time.sleep(1.5) 
+            except Exception as e:
+                st.warning(f"Tentativa de criar aba {nome} falhou ou já existia: {e}")
         else:
-            # Se existe, verifica se tem cabeçalho
-            ws = worksheets[nome_aba]
+            # Se já existe, garante o cabeçalho se estiver vazia
+            ws = abas_existentes[nome]
             if not ws.row_values(1):
                 ws.append_row(colunas)
-
+                
     return sh
 
-# Chama a inicialização AGORA, antes de carregar dados
+# Executa a verificação
 sh_global = inicializar_sistema()
 
 def pegar_planilhas_escrita():
@@ -111,8 +115,6 @@ def pegar_planilhas_escrita():
 
 @st.cache_data(ttl=5)
 def carregar_dados_completo():
-    # Usa a planilha global já carregada
-    
     # CUSTOS
     try:
         ws = sh_global.sheet1
@@ -158,13 +160,10 @@ def carregar_dados_completo():
 
 # --- 4. INTERFACE ---
 st.title("🏗️ Gestor de Obras ERP")
-
-# Carrega dados (agora seguro)
 df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos = carregar_dados_completo()
 
-# --- SIDEBAR LIMPA ---
 with st.sidebar:
-    st.info("Sistema Online ✅")
+    st.success("Sistema Conectado 🟢")
     if st.button("Sair"):
         st.session_state["password_correct"] = False
         st.rerun()
@@ -216,9 +215,7 @@ with tab_lancamento:
                     st.error("Selecione um produto!")
                 else:
                     ws, _, _, _, _ = pegar_planilhas_escrita()
-                    # Verifica cabeçalho da sheet1
                     if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
-                    
                     total = val * qtd
                     ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, total, "Material", etapa, escolha_forn])
                     st.success("Salvo!")
@@ -350,7 +347,6 @@ with tab_cadastros:
 # ABA 4: HISTÓRICO
 # ------------------------------------------------------------------------------
 with tab_historico:
-    # KPIs
     total_orcado = df_cronograma['Orcamento'].sum() if not df_cronograma.empty and 'Orcamento' in df_cronograma.columns else 0.0
     total_realizado = df_custos['Total'].sum() if not df_custos.empty and 'Total' in df_custos.columns else 0.0
     saldo = total_orcado - total_realizado
@@ -391,7 +387,6 @@ with tab_historico:
             st.success("Apagado!")
             st.cache_data.clear()
             st.rerun()
-
 
 
 
