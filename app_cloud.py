@@ -13,9 +13,7 @@ st.set_page_config(page_title="Gestão de Obra PRO", layout="wide", page_icon="�
 COLS_CUSTOS = ["Data", "Codigo", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Classe", "Etapa", "Fornecedor"]
 COLS_MATERIAIS = ["Codigo", "Nome", "Unidade", "Preco_Ref"]
 COLS_FORNECEDORES = ["Codigo", "Nome", "Telefone", "Categoria"]
-# Cronograma agora tem % Executado Manual
 COLS_CRONO = ["Etapa", "Status", "Orcamento", "Porcentagem"] 
-# Nova tabela para os pontos de verificação
 COLS_PONTOS = ["Etapa_Pai", "Descricao", "Feito"] 
 
 # --- 1. LOGIN ---
@@ -66,29 +64,33 @@ def pegar_planilhas_escrita():
     client = conectar_gsheets()
     sh = client.open("Dados_Obra")
     
-    # 1. Cronograma
+    # CRONOGRAMA
     try: ws_crono = sh.worksheet("Cronograma")
     except: 
-        ws_crono = sh.add_worksheet("Cronograma", 20, 5)
+        ws_crono = sh.add_worksheet("Cronograma", 100, 5)
         ws_crono.append_row(COLS_CRONO)
+        time.sleep(1) # Espera o Google processar
     
-    # 2. Materiais
+    # MATERIAIS
     try: ws_mat = sh.worksheet("Materiais")
     except: 
         ws_mat = sh.add_worksheet("Materiais", 100, 4)
         ws_mat.append_row(COLS_MATERIAIS)
+        time.sleep(1)
 
-    # 3. Fornecedores
+    # FORNECEDORES
     try: ws_forn = sh.worksheet("Fornecedores")
     except:
         ws_forn = sh.add_worksheet("Fornecedores", 100, 4)
         ws_forn.append_row(COLS_FORNECEDORES)
+        time.sleep(1)
 
-    # 4. Pontos Críticos (NOVO)
+    # PONTOS CRITICOS (Esta parte estava dando erro)
     try: ws_pontos = sh.worksheet("Pontos_Criticos")
     except:
-        ws_pontos = sh.add_worksheet("Pontos_Criticos", 100, 3)
+        ws_pontos = sh.add_worksheet("Pontos_Criticos", 200, 3)
         ws_pontos.append_row(COLS_PONTOS)
+        time.sleep(1)
         
     return sh.sheet1, ws_crono, ws_mat, ws_forn, ws_pontos
 
@@ -114,11 +116,6 @@ def carregar_dados_completo():
     # CRONOGRAMA
     try:
         ws_c = sh.worksheet("Cronograma")
-        # Garante cabeçalho
-        if ws_c.row_values(1) != COLS_CRONO:
-            # Se não tiver a coluna Porcentagem, avisa mas lê o que der
-            pass 
-        
         dados_c = ws_c.get_all_records()
         df_crono = pd.DataFrame(dados_c)
         if not df_crono.empty:
@@ -127,12 +124,13 @@ def carregar_dados_completo():
             if 'Porcentagem' not in df_crono.columns: df_crono['Porcentagem'] = 0
     except: df_crono = pd.DataFrame()
 
-    # MATERIAIS / FORNECEDORES
+    # MATERIAIS
     try:
         df_materiais = pd.DataFrame(sh.worksheet("Materiais").get_all_records())
         if not df_materiais.empty: df_materiais['row_num'] = df_materiais.index + 2
     except: df_materiais = pd.DataFrame()
 
+    # FORNECEDORES
     try:
         df_fornecedores = pd.DataFrame(sh.worksheet("Fornecedores").get_all_records())
         if not df_fornecedores.empty: df_fornecedores['row_num'] = df_fornecedores.index + 2
@@ -141,7 +139,8 @@ def carregar_dados_completo():
     # PONTOS CRITICOS
     try:
         ws_p = sh.worksheet("Pontos_Criticos")
-        df_pontos = pd.DataFrame(ws_p.get_all_records())
+        dados_p = ws_p.get_all_records()
+        df_pontos = pd.DataFrame(dados_p)
         if not df_pontos.empty: df_pontos['row_num'] = df_pontos.index + 2
     except: df_pontos = pd.DataFrame()
 
@@ -159,7 +158,7 @@ with st.sidebar:
         st.rerun()
 
 # ==============================================================================
-# TABS PRINCIPAIS (AGORA SÃO 4)
+# TABS PRINCIPAIS
 # ==============================================================================
 tab_lancamento, tab_cronograma, tab_cadastros, tab_historico = st.tabs(["📝 Lançar Gastos", "📅 Cronograma & Etapas", "📦 Cadastros", "📊 Histórico"])
 
@@ -213,7 +212,7 @@ with tab_lancamento:
                     st.rerun()
 
 # ------------------------------------------------------------------------------
-# ABA 2: CRONOGRAMA AVANÇADO (NOVIDADE!!!)
+# ABA 2: CRONOGRAMA AVANÇADO
 # ------------------------------------------------------------------------------
 with tab_cronograma:
     st.write("### 📅 Gestão de Etapas e Checklists")
@@ -228,9 +227,7 @@ with tab_cronograma:
             orcamento_meta = st.number_input("Orçamento Previsto (R$)", 0.0)
             if st.form_submit_button("➕ Adicionar Etapa"):
                 _, ws_c, _, _, _ = pegar_planilhas_escrita()
-                # Garante cabeçalho
                 if ws_c.row_values(1) != COLS_CRONO: ws_c.update(range_name="A1:D1", values=[COLS_CRONO])
-                # Salva: Nome, Status, Orcamento, Porcentagem(0)
                 ws_c.append_row([nome_etapa, "Pendente", orcamento_meta, 0])
                 st.success("Etapa Criada!")
                 st.cache_data.clear()
@@ -240,64 +237,51 @@ with tab_cronograma:
     # 2. LISTAGEM E DETALHES
     st.divider()
     if df_cronograma.empty:
-        st.info("Nenhuma etapa cadastrada. Use o formulário acima.")
+        st.info("Nenhuma etapa cadastrada.")
     else:
-        # Loop por cada etapa para criar um "Cartão" de detalhes
         for i, row in df_cronograma.iterrows():
             nome = row['Etapa']
-            # Tratamento de erro caso a coluna porcentagem esteja vazia
             try: pct_atual = int(row['Porcentagem'])
             except: pct_atual = 0
             
-            with st.expander(f"📌 {nome}  |  Executado: {pct_atual}%  |  Orçamento: R$ {row.get('Orcamento',0):,.2f}", expanded=False):
+            # Cabeçalho do Cartão
+            
+            with st.expander(f"📌 {nome}  |  Status: {pct_atual}%  |  Orçamento: R$ {row.get('Orcamento',0):,.2f}", expanded=False):
                 c_edit1, c_edit2 = st.columns([1, 1])
                 
-                # --- A. EDITAR PORCENTAGEM MANUAL ---
+                # A. EDITAR PORCENTAGEM
                 with c_edit1:
-                    st.write("**Progresso Físico Manual**")
-                    novo_pct = st.slider(f"Porcentagem Concluída ({nome})", 0, 100, pct_atual, key=f"sld_{i}")
+                    st.write("**Progresso Físico**")
+                    novo_pct = st.slider(f"% Concluído ({nome})", 0, 100, pct_atual, key=f"sld_{i}")
                     if novo_pct != pct_atual:
                         _, ws_c, _, _, _ = pegar_planilhas_escrita()
-                        # Atualiza coluna 4 (Porcentagem)
                         ws_c.update_cell(row['row_num'], 4, novo_pct)
-                        st.toast(f"Progresso de {nome} atualizado para {novo_pct}%")
+                        st.toast(f"Progresso atualizado!")
                         st.cache_data.clear()
                         time.sleep(1)
                         st.rerun()
 
-                # --- B. PONTOS CRÍTICOS (CHECKLIST) ---
+                # B. PONTOS CRÍTICOS
                 with c_edit2:
-                    st.write("**Pontos Críticos / Checklist**")
+                    st.write("**Pontos de Verificação (Checklist)**")
                     
-                    # Filtra pontos desta etapa
                     if not df_pontos.empty:
-                        pontos_desta_etapa = df_pontos[df_pontos['Etapa_Pai'] == nome]
-                    else:
-                        pontos_desta_etapa = pd.DataFrame()
-
-                    # Mostra os checkboxes existentes
-                    if not pontos_desta_etapa.empty:
-                        for idx_p, row_p in pontos_desta_etapa.iterrows():
-                            # Converte string 'TRUE'/'FALSE' do excel para booleano
+                        pontos_etapa = df_pontos[df_pontos['Etapa_Pai'] == nome]
+                        for idx_p, row_p in pontos_etapa.iterrows():
                             is_checked = str(row_p['Feito']).upper() == 'TRUE'
                             check = st.checkbox(row_p['Descricao'], value=is_checked, key=f"chk_{row_p['row_num']}")
-                            
                             if check != is_checked:
                                 _, _, _, _, ws_p = pegar_planilhas_escrita()
-                                # Atualiza coluna 3 (Feito) na aba Pontos_Criticos
                                 ws_p.update_cell(row_p['row_num'], 3, "TRUE" if check else "FALSE")
                                 st.cache_data.clear()
                                 st.rerun()
-                    else:
-                        st.caption("Nenhum ponto de verificação criado.")
-
-                    # Adicionar Novo Ponto
+                    
                     with st.form(f"add_ponto_{i}", clear_on_submit=True):
-                        novo_ponto_txt = st.text_input("Adicionar Ponto Crítico (ex: Impermeabilização ok)")
+                        novo_ponto = st.text_input("Novo Ponto de Controle")
                         if st.form_submit_button("➕ Add"):
                             _, _, _, _, ws_p = pegar_planilhas_escrita()
-                            ws_p.append_row([nome, novo_ponto_txt, "FALSE"])
-                            st.success("Ponto adicionado!")
+                            ws_p.append_row([nome, novo_ponto, "FALSE"])
+                            st.success("Adicionado!")
                             st.cache_data.clear()
                             st.rerun()
 
@@ -395,6 +379,7 @@ with tab_historico:
             st.success("Apagado!")
             st.cache_data.clear()
             st.rerun()
+
 
 
 
