@@ -9,7 +9,7 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Gestão de Obra PRO", layout="wide", page_icon="🏗️")
 
-# Definição das colunas padrão (ATENÇÃO: Fornecedor agora é obrigatório na estrutura)
+# Definição das colunas padrão
 COLS_CUSTOS = ["Data", "Codigo", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Classe", "Etapa", "Fornecedor"]
 COLS_MATERIAIS = ["Codigo", "Nome", "Unidade", "Preco_Ref"]
 COLS_FORNECEDORES = ["Codigo", "Nome", "Telefone", "Categoria"]
@@ -42,6 +42,18 @@ def limpar_dinheiro(valor):
         try: return float(valor.replace('R$', '').replace('.', '').replace(',', '.').strip())
         except: return 0.0
     return 0.0
+
+def proximo_id(df, col_nome='Codigo'):
+    """Calcula o próximo ID baseado no maior número existente."""
+    if df.empty: return 1
+    try:
+        # Converte para numero, ignora erros (textos viram NaN)
+        numeros = pd.to_numeric(df[col_nome], errors='coerce')
+        maior = numeros.max()
+        if pd.isna(maior): return 1
+        return int(maior) + 1
+    except:
+        return 1
 
 @st.cache_resource
 def conectar_gsheets():
@@ -78,25 +90,17 @@ def carregar_dados_completo():
     
     sh = client.open("Dados_Obra")
 
-    # 1. CUSTOS (Leitura Inteligente)
+    # 1. CUSTOS
     try:
         ws = sh.sheet1
         dados = ws.get_all_records()
         df_custos = pd.DataFrame(dados)
-        
         if not df_custos.empty:
             df_custos['row_num'] = df_custos.index + 2
-            
-            # --- CORREÇÃO DO FORNECEDOR ---
-            # Se a coluna não existir (planilha antiga), cria ela vazia
-            if 'Fornecedor' not in df_custos.columns:
-                df_custos['Fornecedor'] = "-"
-            
-            # Garante limpeza de dinheiro
+            if 'Fornecedor' not in df_custos.columns: df_custos['Fornecedor'] = "-"
             for col in ['Total', 'Valor', 'Qtd']:
                 if col in df_custos.columns:
                     df_custos[col] = df_custos[col].apply(limpar_dinheiro)
-                    
     except: df_custos = pd.DataFrame()
 
     # 2. CRONOGRAMA
@@ -131,7 +135,7 @@ def carregar_dados_completo():
 st.title("🏗️ Gestor de Obras ERP")
 df_custos, df_cronograma, df_materiais, df_fornecedores = carregar_dados_completo()
 
-# --- MENU LATERAL ---
+# --- SIDEBAR (CRONOGRAMA) ---
 with st.sidebar:
     st.header("📅 Cronograma")
     if not df_cronograma.empty:
@@ -155,70 +159,94 @@ with st.sidebar:
         st.session_state["password_correct"] = False
         st.rerun()
 
-# --- ABAS DE CADASTRO ---
-st.subheader("📦 Cadastros Gerais")
-with st.expander("Gerenciar Materiais e Fornecedores", expanded=False):
-    tab_mat, tab_forn = st.tabs(["Materiais", "Fornecedores"])
-    
-    # MATERIAIS
-    with tab_mat:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**Novo Material**")
-            with st.form("form_mat"):
-                cod = st.text_input("Código")
-                nome = st.text_input("Nome")
-                un = st.selectbox("Unidade", ["un","m","kg","sc","m²","m³"])
-                ref = st.number_input("R$ Ref", 0.0)
-                if st.form_submit_button("Cadastrar"):
-                    if cod and nome:
-                        _, _, ws_m, _ = pegar_planilhas_escrita()
-                        ws_m.append_row([cod, nome, un, ref])
-                        st.success("Salvo!")
-                        st.cache_data.clear()
-                        time.sleep(1)
-                        st.rerun()
-        with c2:
-            st.write("**Lista de Materiais**")
-            if not df_materiais.empty:
-                st.dataframe(df_materiais[['Codigo', 'Nome', 'Unidade']], height=150)
+# --- CADASTROS GERAIS ---
+st.subheader("📦 Cadastros (Código Automático)")
 
-    # FORNECEDORES
-    with tab_forn:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**Novo Fornecedor**")
-            with st.form("form_forn"):
-                fc = st.text_input("Cód/CNPJ")
-                fn = st.text_input("Nome")
-                ft = st.text_input("Tel")
-                fcat = st.selectbox("Categoria", ["Material", "Serviço"])
-                if st.form_submit_button("Cadastrar"):
-                    if fc and fn:
-                        _, _, _, ws_f = pegar_planilhas_escrita()
-                        ws_f.append_row([fc, fn, ft, fcat])
-                        st.success("Salvo!")
-                        st.cache_data.clear()
-                        time.sleep(1)
-                        st.rerun()
-        with c2:
-            st.write("**Lista de Fornecedores**")
-            if not df_fornecedores.empty:
-                st.dataframe(df_fornecedores[['Nome', 'Telefone']], height=150)
+# TAB 1: MATERIAIS
+# TAB 2: FORNECEDORES
+tab_mat, tab_forn = st.tabs(["Materiais", "Fornecedores"])
+
+with tab_mat:
+    c_form, c_lista = st.columns([1, 2])
+    
+    with c_form:
+        st.write("**Novo Material**")
+        # --- CÁLCULO DO ID AUTOMÁTICO ---
+        prox_cod_mat = proximo_id(df_materiais)
+        
+        with st.form("form_mat"):
+            # Campo desabilitado mostrando o código
+            st.text_input("Código Automático", value=prox_cod_mat, disabled=True)
+            
+            nome = st.text_input("Nome do Material")
+            un = st.selectbox("Unidade", ["un","m","kg","sc","m²","m³","lt","cx"])
+            ref = st.number_input("Preço Ref (R$)", 0.0)
+            
+            if st.form_submit_button("➕ Cadastrar"):
+                if nome:
+                    _, _, ws_m, _ = pegar_planilhas_escrita()
+                    ws_m.append_row([prox_cod_mat, nome, un, ref])
+                    st.success(f"Material {prox_cod_mat} cadastrado!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Digite o nome.")
+                    
+    with c_lista:
+        st.write("**Lista de Materiais**")
+        if not df_materiais.empty:
+            st.dataframe(df_materiais[['Codigo', 'Nome', 'Unidade']], height=250, use_container_width=True)
+
+with tab_forn:
+    c_form_f, c_lista_f = st.columns([1, 2])
+    
+    with c_form_f:
+        st.write("**Novo Fornecedor**")
+        # --- CÁLCULO DO ID AUTOMÁTICO ---
+        prox_cod_forn = proximo_id(df_fornecedores)
+        
+        with st.form("form_forn"):
+            # Campo desabilitado
+            st.text_input("Código Automático", value=prox_cod_forn, disabled=True)
+            
+            fn = st.text_input("Nome da Empresa")
+            ft = st.text_input("Telefone")
+            fcat = st.selectbox("Categoria", ["Material", "Serviço", "Mão de Obra"])
+            
+            if st.form_submit_button("➕ Cadastrar"):
+                if fn:
+                    _, _, _, ws_f = pegar_planilhas_escrita()
+                    ws_f.append_row([prox_cod_forn, fn, ft, fcat])
+                    st.success(f"Fornecedor {prox_cod_forn} cadastrado!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Digite o nome.")
+
+    with c_lista_f:
+        st.write("**Lista de Fornecedores**")
+        if not df_fornecedores.empty:
+            st.dataframe(df_fornecedores[['Codigo', 'Nome', 'Telefone']], height=250, use_container_width=True)
 
 # --- LANÇAMENTO ---
 st.divider()
 st.subheader("📝 Lançamento de Despesas")
 
 if df_materiais.empty:
-    st.warning("Cadastre materiais primeiro.")
+    st.warning("Cadastre materiais acima primeiro.")
 else:
+    # Filtro Material
     df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
     escolha = st.selectbox("Produto:", [""] + df_materiais['Display'].tolist())
     
+    # Filtro Fornecedor
     lista_forn = ["Sem Fornecedor"]
     if not df_fornecedores.empty:
-        lista_forn += df_fornecedores['Nome'].tolist()
+        df_fornecedores['DisplayF'] = df_fornecedores['Codigo'].astype(str) + " - " + df_fornecedores['Nome']
+        lista_forn += df_fornecedores['DisplayF'].tolist()
+    
     escolha_forn = st.selectbox("Fornecedor:", lista_forn)
 
     nome_sel, un_sug, preco_sug, cod_sel = "", "un", 0.0, ""
@@ -243,38 +271,28 @@ else:
                 st.error("Selecione Material")
             else:
                 ws, _, _, _ = pegar_planilhas_escrita()
-                # Verifica se o cabeçalho tem Fornecedor, se não tiver, adiciona na marra
                 if ws.row_values(1) != COLS_CUSTOS:
                     ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
                 
                 total = val * qtd
-                forn_txt = escolha_forn if escolha_forn != "Sem Fornecedor" else "-"
+                forn_txt = escolha_forn # Salva o texto inteiro "1 - Deposito"
                 
-                # ORDEM DE SALVAMENTO: Data, Cod, Desc, Qtd, Un, Valor, Total, Classe, Etapa, Fornecedor
                 ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, total, "Material", etapa, forn_txt])
                 st.success("Lançado!")
                 st.cache_data.clear()
                 time.sleep(1)
                 st.rerun()
 
-# --- HISTÓRICO CORRIGIDO ---
+# --- HISTÓRICO ---
 st.divider()
 st.subheader("📋 Histórico Geral")
 
 if not df_custos.empty:
     df_show = df_custos.copy()
-    
-    # SE A COLUNA FORNECEDOR NÃO EXISTIR NO DATAFRAME, CRIA ELA
-    if 'Fornecedor' not in df_show.columns:
-        df_show['Fornecedor'] = "-"
-        
+    if 'Fornecedor' not in df_show.columns: df_show['Fornecedor'] = "-"
     df_show.insert(0, "Excluir", False)
     
-    # ORDEM EXATA QUE VOCÊ PEDIU
-    # [Excluir | Data | Fornecedor | Material (Descricao) | Unidade | Valor | Total]
     colunas_finais = ["Excluir", "Data", "Fornecedor", "Descricao", "Unidade", "Valor", "Total"]
-    
-    # Verifica quais colunas realmente temos para não dar erro
     cols_existentes = [c for c in colunas_finais if c in df_show.columns]
     
     edited = st.data_editor(
@@ -283,11 +301,8 @@ if not df_custos.empty:
         use_container_width=True,
         column_config={
             "Excluir": st.column_config.CheckboxColumn("Del?", width="small"),
-            "Descricao": st.column_config.TextColumn("Material"),
             "Valor": st.column_config.NumberColumn("Valor Un", format="R$ %.2f"),
-            "Total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
-            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            "Fornecedor": st.column_config.TextColumn("Fornecedor", width="medium")
+            "Total": st.column_config.NumberColumn("Total", format="R$ %.2f")
         },
         disabled=["Data", "Fornecedor", "Descricao", "Unidade", "Valor", "Total"]
     )
@@ -301,5 +316,6 @@ if not df_custos.empty:
         st.success("Apagado!")
         st.cache_data.clear()
         st.rerun()
+
 
 
