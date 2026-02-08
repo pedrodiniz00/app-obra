@@ -15,6 +15,7 @@ COLS_MATERIAIS = ["Codigo", "Nome", "Unidade", "Preco_Ref"]
 COLS_FORNECEDORES = ["Codigo", "Nome", "Telefone", "Categoria"]
 COLS_CRONO = ["Etapa", "Status", "Orcamento", "Porcentagem"] 
 COLS_PONTOS = ["Etapa_Pai", "Descricao", "Feito"] 
+COLS_TAREFAS = ["Data_Limite", "Descricao", "Responsavel", "Status"] # NOVA TABELA
 
 # --- 1. LOGIN ---
 def check_password():
@@ -65,7 +66,8 @@ def garantir_abas(sh):
         "Cronograma": COLS_CRONO,
         "Materiais": COLS_MATERIAIS,
         "Fornecedores": COLS_FORNECEDORES,
-        "Pontos_Criticos": COLS_PONTOS
+        "Pontos_Criticos": COLS_PONTOS,
+        "Tarefas": COLS_TAREFAS # GARANTE QUE A ABA EXISTA
     }
     try: existentes = {ws.title: ws for ws in sh.worksheets()}
     except: return False
@@ -75,7 +77,7 @@ def garantir_abas(sh):
             try:
                 ws = sh.add_worksheet(nome, 100, len(cols))
                 ws.append_row(cols)
-                time.sleep(2)
+                time.sleep(1.5)
             except: pass
     return True
 
@@ -93,12 +95,13 @@ def pegar_dados_seguro():
         sh.worksheet("Cronograma"),
         sh.worksheet("Materiais"),
         sh.worksheet("Fornecedores"),
-        sh.worksheet("Pontos_Criticos")
+        sh.worksheet("Pontos_Criticos"),
+        sh.worksheet("Tarefas") # RETORNA A NOVA ABA
     )
 
 @st.cache_data(ttl=5)
 def carregar_dfs():
-    ws1, wsc, wsm, wsf, wsp = pegar_dados_seguro()
+    ws1, wsc, wsm, wsf, wsp, wst = pegar_dados_seguro()
     
     def ler(ws):
         try: return pd.DataFrame(ws.get_all_records())
@@ -109,6 +112,7 @@ def carregar_dfs():
     df_mat = ler(wsm)
     df_forn = ler(wsf)
     df_pontos = ler(wsp)
+    df_tarefas = ler(wst) # LÊ AS TAREFAS
     
     if not df_custos.empty:
         df_custos['row_num'] = df_custos.index + 2
@@ -121,10 +125,11 @@ def carregar_dfs():
         if 'Orcamento' in df_crono.columns: df_crono['Orcamento'] = df_crono['Orcamento'].apply(limpar_dinheiro)
         if 'Porcentagem' not in df_crono.columns: df_crono['Porcentagem'] = 0
 
-    for df in [df_mat, df_forn, df_pontos]:
+    # Adiciona row_num em todos para permitir edição
+    for df in [df_mat, df_forn, df_pontos, df_tarefas]:
         if not df.empty: df['row_num'] = df.index + 2
         
-    return df_custos, df_crono, df_mat, df_forn, df_pontos
+    return df_custos, df_crono, df_mat, df_forn, df_pontos, df_tarefas
 
 # --- 4. INTERFACE ---
 st.title("🏗️ Gestor de Obras ERP")
@@ -139,10 +144,12 @@ with st.sidebar:
         st.session_state["password_correct"] = False
         st.rerun()
 
-df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos = carregar_dfs()
+df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos, df_tarefas = carregar_dfs()
 
-# TABS
-tab_lancamento, tab_cronograma, tab_cadastros, tab_historico = st.tabs(["📝 Lançar", "📅 Cronograma", "📦 Cadastros", "📊 Histórico"])
+# TABS (AGORA SÃO 5)
+tab_lancamento, tab_cronograma, tab_tarefas, tab_cadastros, tab_historico = st.tabs([
+    "📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📦 Cadastros", "📊 Histórico"
+])
 
 # --- TAB 1: LANÇAMENTO ---
 with tab_lancamento:
@@ -179,7 +186,7 @@ with tab_lancamento:
             if st.form_submit_button("Salvar"):
                 if not escolha: st.error("Escolha um produto")
                 else:
-                    ws, _, _, _, _ = pegar_dados_seguro()
+                    ws, _, _, _, _, _ = pegar_dados_seguro()
                     if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
                     
                     ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, val*qtd, "Material", etapa, escolha_forn])
@@ -187,7 +194,7 @@ with tab_lancamento:
                     st.cache_data.clear()
                     st.rerun()
 
-# --- TAB 2: CRONOGRAMA (COM EDIÇÃO) ---
+# --- TAB 2: CRONOGRAMA ---
 with tab_cronograma:
     c_new, c_list = st.columns([1, 2])
     with c_new:
@@ -196,7 +203,7 @@ with tab_cronograma:
             nome = st.text_input("Nome")
             orc = st.number_input("Meta (R$)", 0.0)
             if st.form_submit_button("Criar"):
-                _, ws, _, _, _ = pegar_dados_seguro()
+                _, ws, _, _, _, _ = pegar_dados_seguro()
                 ws.append_row([nome, "Pendente", orc, 0])
                 st.success("Criado!")
                 st.cache_data.clear()
@@ -209,29 +216,25 @@ with tab_cronograma:
             pct = int(row.get('Porcentagem', 0))
             orc_atual = float(row.get('Orcamento', 0))
             
-            # EXPANDER DA ETAPA
+            
             with st.expander(f"📌 {nome_atual} ({pct}%) | Meta: R$ {orc_atual:,.2f}"):
+                t_prog, t_check, t_edit = st.tabs(["📊 Progresso", "✅ Checklist", "✏️ Editar"])
                 
-                # ABAS DENTRO DA ETAPA (Progresso vs Edição)
-                t_prog, t_check, t_edit = st.tabs(["📊 Progresso", "✅ Checklist", "✏️ Editar/Excluir"])
-                
-                # 1. PROGRESSO
                 with t_prog:
                     novo_pct = st.slider(f"Executado", 0, 100, pct, key=f"s_{i}")
                     if novo_pct != pct:
-                        _, ws, _, _, _ = pegar_dados_seguro()
+                        _, ws, _, _, _, _ = pegar_dados_seguro()
                         ws.update_cell(row['row_num'], 4, novo_pct)
                         st.cache_data.clear()
                         st.rerun()
 
-                # 2. CHECKLIST
                 with t_check:
                     if not df_pontos.empty:
                         pts = df_pontos[df_pontos['Etapa_Pai']==nome_atual]
                         for idx, p in pts.iterrows():
                             chk = st.checkbox(p['Descricao'], value=(str(p['Feito']).upper()=='TRUE'), key=f"pk_{p['row_num']}")
                             if chk != (str(p['Feito']).upper()=='TRUE'):
-                                _, _, _, _, wsp = pegar_dados_seguro()
+                                _, _, _, _, wsp, _ = pegar_dados_seguro()
                                 wsp.update_cell(p['row_num'], 3, "TRUE" if chk else "FALSE")
                                 st.cache_data.clear()
                                 st.rerun()
@@ -239,56 +242,92 @@ with tab_cronograma:
                     with st.form(f"add_p_{i}", clear_on_submit=True):
                         pt_txt = st.text_input("Novo Ponto")
                         if st.form_submit_button("Add"):
-                            _, _, _, _, wsp = pegar_dados_seguro()
+                            _, _, _, _, wsp, _ = pegar_dados_seguro()
                             wsp.append_row([nome_atual, pt_txt, "FALSE"])
                             st.cache_data.clear()
                             st.rerun()
 
-                # 3. EDIÇÃO (NOVA FUNCIONALIDADE)
                 with t_edit:
-                    st.warning("⚠️ Editar o nome atualizará todos os custos vinculados.")
                     with st.form(f"edit_etapa_{i}"):
-                        nome_edit = st.text_input("Nome da Etapa", value=nome_atual)
+                        nome_edit = st.text_input("Nome", value=nome_atual)
                         orc_edit = st.number_input("Orçamento", value=orc_atual)
-                        
-                        col_save, col_del = st.columns(2)
-                        
-                        if col_save.form_submit_button("💾 Salvar Alterações"):
-                            ws_custos, ws_crono, _, _, _ = pegar_dados_seguro()
-                            
-                            # 1. Atualiza na aba Cronograma
-                            ws_crono.update_cell(row['row_num'], 1, nome_edit) # Col 1 = Nome
-                            ws_crono.update_cell(row['row_num'], 3, orc_edit)  # Col 3 = Orcamento
-                            
-                            # 2. Atualiza os custos antigos (Procura e Substitui)
-                            if nome_edit != nome_atual and not df_custos.empty:
-                                try:
-                                    # Procura todas as celulas com nome antigo na aba Custos e troca
-                                    cell_list = ws_custos.findall(nome_atual)
-                                    for cell in cell_list:
-                                        # Verifica se é a coluna de etapa (Coluna I = 9)
-                                        if cell.col == 9: 
-                                            cell.value = nome_edit
-                                    if cell_list:
-                                        ws_custos.update_cells(cell_list)
-                                        st.success(f"Histórico atualizado de '{nome_atual}' para '{nome_edit}'")
-                                except Exception as e:
-                                    st.warning(f"Erro ao atualizar histórico: {e}")
-
-                            st.success("Etapa atualizada!")
+                        if st.form_submit_button("Salvar Edição"):
+                            _, ws_crono, _, _, _, _ = pegar_dados_seguro()
+                            ws_crono.update_cell(row['row_num'], 1, nome_edit)
+                            ws_crono.update_cell(row['row_num'], 3, orc_edit)
+                            st.success("Atualizado!")
                             st.cache_data.clear()
-                            time.sleep(1)
                             st.rerun()
 
-                        if col_del.form_submit_button("🗑️ Excluir Etapa", type="primary"):
-                            _, ws_crono, _, _, _ = pegar_dados_seguro()
-                            ws_crono.delete_rows(row['row_num'])
-                            st.success("Etapa Excluída!")
-                            st.cache_data.clear()
-                            time.sleep(1)
-                            st.rerun()
+# --- TAB 3: TAREFAS (NOVA ABA) ---
+with tab_tarefas:
+    st.write("### 📌 Caderno de Tarefas e Pendências")
+    
+    # 1. FORMULÁRIO DE NOVA TAREFA
+    with st.expander("➕ Adicionar Nova Tarefa", expanded=True):
+        with st.form("form_tarefa", clear_on_submit=True):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            desc_t = c1.text_input("O que precisa ser feito?", placeholder="Ex: Comprar cimento, Ligar pro pedreiro...")
+            resp_t = c2.text_input("Responsável", placeholder="Quem?")
+            data_t = c3.date_input("Prazo Limite")
+            
+            if st.form_submit_button("Adicionar Tarefa"):
+                if desc_t:
+                    _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
+                    # Salva: Data, Descricao, Responsavel, Status
+                    ws_tarefas.append_row([str(data_t), desc_t, resp_t, "Pendente"])
+                    st.success("Tarefa anotada!")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.warning("Escreva a descrição da tarefa.")
 
-# --- TAB 3: CADASTROS ---
+    st.divider()
+
+    # 2. LISTA DE TAREFAS PENDENTES
+    st.subheader("⚠️ Pendentes")
+    if not df_tarefas.empty:
+        pendentes = df_tarefas[df_tarefas['Status'] != 'Concluída']
+        
+        if pendentes.empty:
+            st.info("Nenhuma pendência! Tudo em dia.")
+        else:
+            for i, t in pendentes.iterrows():
+                # Layout de cartão para a tarefa
+                col_check, col_info, col_del = st.columns([0.5, 4, 0.5])
+                
+                with col_check:
+                    # Checkbox para concluir
+                    if st.checkbox("", key=f"t_check_{t['row_num']}"):
+                        _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
+                        ws_tarefas.update_cell(t['row_num'], 4, "Concluída")
+                        st.balloons()
+                        st.cache_data.clear()
+                        time.sleep(1)
+                        st.rerun()
+                
+                with col_info:
+                    st.markdown(f"**{t['Descricao']}**")
+                    st.caption(f"📅 Prazo: {t['Data_Limite']} | 👤 Resp: {t['Responsavel']}")
+                
+                with col_del:
+                    if st.button("🗑️", key=f"del_t_{t['row_num']}"):
+                        _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
+                        ws_tarefas.delete_rows(t['row_num'])
+                        st.cache_data.clear()
+                        st.rerun()
+                st.write("---")
+
+    # 3. TAREFAS CONCLUÍDAS (EXPANSÍVEL)
+    with st.expander("Ver Tarefas Concluídas"):
+        if not df_tarefas.empty:
+            feitas = df_tarefas[df_tarefas['Status'] == 'Concluída']
+            if not feitas.empty:
+                st.dataframe(feitas[['Data_Limite', 'Descricao', 'Responsavel']], use_container_width=True)
+            else:
+                st.caption("Nenhuma tarefa concluída ainda.")
+
+# --- TAB 4: CADASTROS ---
 with tab_cadastros:
     sub1, sub2 = st.tabs(["Materiais", "Fornecedores"])
     with sub1:
@@ -302,7 +341,7 @@ with tab_cadastros:
                 un = st.selectbox("Un", ["un","m","kg","sc","m²"])
                 ref = st.number_input("R$", 0.0)
                 if st.form_submit_button("Salvar"):
-                    _, _, ws, _, _ = pegar_dados_seguro()
+                    _, _, ws, _, _, _ = pegar_dados_seguro()
                     ws.append_row([pid, nm, un, ref])
                     st.cache_data.clear()
                     st.rerun()
@@ -320,14 +359,14 @@ with tab_cadastros:
                 ft = st.text_input("Tel")
                 fc = st.selectbox("Cat", ["Material", "Serviço"])
                 if st.form_submit_button("Salvar"):
-                    _, _, _, ws, _ = pegar_dados_seguro()
+                    _, _, _, ws, _, _ = pegar_dados_seguro()
                     ws.append_row([fid, fn, ft, fc])
                     st.cache_data.clear()
                     st.rerun()
         with c2:
             if not df_fornecedores.empty: st.dataframe(df_fornecedores[['Codigo','Nome']])
 
-# --- TAB 4: HISTÓRICO ---
+# --- TAB 5: HISTÓRICO ---
 with tab_historico:
     orc = df_cronograma['Orcamento'].sum() if not df_cronograma.empty and 'Orcamento' in df_cronograma.columns else 0
     real = df_custos['Total'].sum() if not df_custos.empty and 'Total' in df_custos.columns else 0
@@ -350,15 +389,12 @@ with tab_historico:
         
         dels = edited[edited["Excluir"]==True]
         if not dels.empty and st.button("Confirmar Exclusão"):
-            ws, _, _, _, _ = pegar_dados_seguro()
+            ws, _, _, _, _, _ = pegar_dados_seguro()
             rows = df_custos.loc[dels.index, "row_num"].tolist()
             rows.sort(reverse=True)
             for r in rows: ws.delete_rows(r)
             st.success("Feito!")
             st.cache_data.clear()
             st.rerun()
-
-
-
 
 
