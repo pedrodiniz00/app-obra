@@ -9,13 +9,15 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Gestão de Obra PRO", layout="wide", page_icon="🏗️")
 
-# Definição das colunas
-COLS_CUSTOS = ["Data", "Codigo", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Classe", "Etapa", "Fornecedor"]
-COLS_MATERIAIS = ["Codigo", "Nome", "Unidade", "Preco_Ref"]
-COLS_FORNECEDORES = ["Codigo", "Nome", "Telefone", "Categoria"]
-COLS_CRONO = ["Etapa", "Status", "Orcamento", "Porcentagem"] 
-COLS_PONTOS = ["Etapa_Pai", "Descricao", "Feito"] 
-COLS_TAREFAS = ["Data_Limite", "Descricao", "Responsavel", "Status"] # NOVA TABELA
+# --- DEFINIÇÃO DAS COLUNAS (AGORA COM ID_OBRA NO INÍCIO) ---
+# A primeira coluna de tudo (exceto cadastros globais) agora é ID_Obra
+COLS_OBRAS = ["ID", "Nome", "Endereco", "Status"] # NOVA ABA
+COLS_CUSTOS = ["ID_Obra", "Data", "Codigo", "Descricao", "Qtd", "Unidade", "Valor", "Total", "Classe", "Etapa", "Fornecedor"]
+COLS_MATERIAIS = ["Codigo", "Nome", "Unidade", "Preco_Ref"] # Global
+COLS_FORNECEDORES = ["Codigo", "Nome", "Telefone", "Categoria"] # Global
+COLS_CRONO = ["ID_Obra", "Etapa", "Status", "Orcamento", "Porcentagem"] 
+COLS_PONTOS = ["ID_Obra", "Etapa_Pai", "Descricao", "Feito"] 
+COLS_TAREFAS = ["ID_Obra", "Data_Limite", "Descricao", "Responsavel", "Status"]
 
 # --- 1. LOGIN ---
 def check_password():
@@ -38,7 +40,7 @@ def check_password():
 
 if not check_password(): st.stop()
 
-# --- 2. CONEXÃO ROBUSTA ---
+# --- 2. CONEXÃO E UTILITÁRIOS ---
 def limpar_dinheiro(valor):
     if isinstance(valor, (int, float)): return float(valor)
     if isinstance(valor, str):
@@ -49,10 +51,10 @@ def limpar_dinheiro(valor):
 def proximo_id(df, col_nome='Codigo'):
     if df.empty: return 1
     try:
-        numeros = pd.to_numeric(df[col_nome], errors='coerce')
-        maior = numeros.max()
-        if pd.isna(maior): return 1
-        return int(maior) + 1
+        # Tenta pegar apenas numeros
+        numeros = pd.to_numeric(df[col_nome], errors='coerce').dropna()
+        if numeros.empty: return 1
+        return int(numeros.max()) + 1
     except: return 1
 
 @st.cache_resource
@@ -61,16 +63,18 @@ def conectar_gsheets():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return gspread.authorize(creds)
 
-def garantir_abas(sh):
+# Inicialização Segura das Abas
+def inicializar_abas(sh):
     mapa = {
+        "Obras": COLS_OBRAS, # Nova aba Mestra
         "Cronograma": COLS_CRONO,
         "Materiais": COLS_MATERIAIS,
         "Fornecedores": COLS_FORNECEDORES,
         "Pontos_Criticos": COLS_PONTOS,
-        "Tarefas": COLS_TAREFAS # GARANTE QUE A ABA EXISTA
+        "Tarefas": COLS_TAREFAS
     }
     try: existentes = {ws.title: ws for ws in sh.worksheets()}
-    except: return False
+    except: return
 
     for nome, cols in mapa.items():
         if nome not in existentes:
@@ -79,321 +83,335 @@ def garantir_abas(sh):
                 ws.append_row(cols)
                 time.sleep(1.5)
             except: pass
-    return True
+    
+    # Verifica a Sheet1 (Custos) separadamente
+    ws1 = sh.sheet1
+    if not ws1.row_values(1):
+        ws1.append_row(COLS_CUSTOS)
 
-def pegar_dados_seguro():
+def pegar_dados_brutos():
     client = conectar_gsheets()
     try: sh = client.open("Dados_Obra")
     except: 
         st.error("Planilha 'Dados_Obra' não encontrada.")
         st.stop()
     
-    garantir_abas(sh)
+    inicializar_abas(sh)
     
     return (
-        sh.sheet1,
+        sh.sheet1, # Custos
         sh.worksheet("Cronograma"),
         sh.worksheet("Materiais"),
         sh.worksheet("Fornecedores"),
         sh.worksheet("Pontos_Criticos"),
-        sh.worksheet("Tarefas") # RETORNA A NOVA ABA
+        sh.worksheet("Tarefas"),
+        sh.worksheet("Obras") # Nova
     )
 
 @st.cache_data(ttl=5)
-def carregar_dfs():
-    ws1, wsc, wsm, wsf, wsp, wst = pegar_dados_seguro()
+def carregar_tudo():
+    ws_custos, ws_crono, ws_mat, ws_forn, ws_pontos, ws_tarefas, ws_obras = pegar_dados_brutos()
     
     def ler(ws):
         try: return pd.DataFrame(ws.get_all_records())
         except: return pd.DataFrame()
 
-    df_custos = ler(ws1)
-    df_crono = ler(wsc)
-    df_mat = ler(wsm)
-    df_forn = ler(wsf)
-    df_pontos = ler(wsp)
-    df_tarefas = ler(wst) # LÊ AS TAREFAS
+    df_custos = ler(ws_custos)
+    df_crono = ler(ws_crono)
+    df_mat = ler(ws_mat)
+    df_forn = ler(ws_forn)
+    df_pontos = ler(ws_pontos)
+    df_tarefas = ler(ws_tarefas)
+    df_obras = ler(ws_obras)
     
+    # Tratamento de Dados
     if not df_custos.empty:
         df_custos['row_num'] = df_custos.index + 2
-        if 'Fornecedor' not in df_custos.columns: df_custos['Fornecedor'] = "-"
         for c in ['Total','Valor','Qtd']: 
             if c in df_custos.columns: df_custos[c] = df_custos[c].apply(limpar_dinheiro)
 
     if not df_crono.empty:
         df_crono['row_num'] = df_crono.index + 2
         if 'Orcamento' in df_crono.columns: df_crono['Orcamento'] = df_crono['Orcamento'].apply(limpar_dinheiro)
-        if 'Porcentagem' not in df_crono.columns: df_crono['Porcentagem'] = 0
 
-    # Adiciona row_num em todos para permitir edição
-    for df in [df_mat, df_forn, df_pontos, df_tarefas]:
+    # Adiciona row_num nos outros
+    for df in [df_mat, df_forn, df_pontos, df_tarefas, df_obras]:
         if not df.empty: df['row_num'] = df.index + 2
         
-    return df_custos, df_crono, df_mat, df_forn, df_pontos, df_tarefas
+    return df_custos, df_crono, df_mat, df_forn, df_pontos, df_tarefas, df_obras
 
-# --- 4. INTERFACE ---
-st.title("🏗️ Gestor de Obras ERP")
+# --- 3. LÓGICA DE SELEÇÃO DE OBRA ---
+st.title("🏗️ Gestor Multi-Obras ERP")
+df_custos, df_crono, df_mat, df_forn, df_pontos, df_tarefas, df_obras = carregar_tudo()
 
+# --- SIDEBAR: SELETOR DE OBRA ---
 with st.sidebar:
-    st.success("Sistema Online 🟢")
-    if st.button("🔄 Atualizar Dados"):
+    st.header("🏢 Seleção de Obra")
+    
+    # Se não tem obra nenhuma cadastrada
+    if df_obras.empty:
+        st.warning("Nenhuma obra cadastrada!")
+        obra_atual = None
+    else:
+        # Cria lista de seleção: "1 - Casa João"
+        opcoes_obras = df_obras.apply(lambda x: f"{x['ID']} - {x['Nome']}", axis=1).tolist()
+        selecao = st.selectbox("Obra Ativa:", opcoes_obras)
+        
+        # Pega o ID da obra selecionada
+        id_obra_atual = int(selecao.split(" - ")[0])
+        nome_obra_atual = selecao.split(" - ")[1]
+        
+        st.success(f"Gerenciando: **{nome_obra_atual}**")
+        obra_atual = id_obra_atual
+
+    st.divider()
+    
+    # Botão para criar NOVA OBRA
+    with st.expander("➕ Nova Obra"):
+        with st.form("nova_obra"):
+            n_nome = st.text_input("Nome da Obra")
+            n_end = st.text_input("Endereço")
+            if st.form_submit_button("Criar"):
+                prox_id = proximo_id(df_obras, 'ID')
+                _, _, _, _, _, _, ws_o = pegar_dados_brutos()
+                ws_o.append_row([prox_id, n_nome, n_end, "Ativa"])
+                st.success("Obra Criada!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+                
+    st.divider()
+    if st.button("Atualizar Dados"):
         st.cache_data.clear()
         st.rerun()
-    st.divider()
-    if st.button("Sair"):
-        st.session_state["password_correct"] = False
-        st.rerun()
 
-df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos, df_tarefas = carregar_dfs()
+# SE NÃO TIVER OBRA SELECIONADA, PARA AQUI
+if obra_atual is None:
+    st.info("👈 Cadastre uma nova obra na barra lateral para começar.")
+    st.stop()
 
-# TABS (AGORA SÃO 5)
-tab_lancamento, tab_cronograma, tab_tarefas, tab_cadastros, tab_historico = st.tabs([
+# --- FILTRAGEM DOS DADOS PELA OBRA SELECIONADA ---
+# Aqui acontece a mágica: filtramos todos os dataframes pelo ID da obra
+# Materiais e Fornecedores NÃO são filtrados (são globais)
+
+def filtrar(df):
+    if df.empty or 'ID_Obra' not in df.columns: return pd.DataFrame(columns=df.columns)
+    return df[df['ID_Obra'] == obra_atual]
+
+df_custos_f = filtrar(df_custos)
+df_crono_f = filtrar(df_crono)
+df_pontos_f = filtrar(df_pontos)
+df_tarefas_f = filtrar(df_tarefas)
+
+# ==============================================================================
+# INTERFACE PRINCIPAL
+# ==============================================================================
+
+tab_lanc, tab_crono, tab_tarefa, tab_cad, tab_hist = st.tabs([
     "📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📦 Cadastros", "📊 Histórico"
 ])
 
-# --- TAB 1: LANÇAMENTO ---
-with tab_lancamento:
-    st.write("### Novo Lançamento")
-    if df_materiais.empty:
-        st.warning("Cadastre materiais primeiro.")
+# --- 1. LANÇAR (FILTRADO) ---
+with tab_lanc:
+    st.subheader(f"Novo Gasto - {nome_obra_atual}")
+    
+    if df_mat.empty: st.warning("Cadastre materiais na aba Cadastros.")
     else:
-        df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
-        escolha = st.selectbox("Produto:", [""] + df_materiais['Display'].tolist())
+        df_mat['Display'] = df_mat['Codigo'].astype(str) + " - " + df_mat['Nome']
+        escolha = st.selectbox("Produto:", [""] + df_mat['Display'].tolist())
         
         lista_forn = ["Sem Fornecedor"]
-        if not df_fornecedores.empty:
-            df_fornecedores['DisplayF'] = df_fornecedores['Codigo'].astype(str) + " - " + df_fornecedores['Nome']
-            lista_forn += df_fornecedores['DisplayF'].tolist()
+        if not df_forn.empty:
+            df_forn['DisplayF'] = df_forn['Codigo'].astype(str) + " - " + df_forn['Nome']
+            lista_forn += df_forn['DisplayF'].tolist()
         escolha_forn = st.selectbox("Fornecedor:", lista_forn)
 
-        nome_sel, un_sug, preco_sug, cod_sel = "", "un", 0.0, ""
+        nome_s, un_s, preco_s, cod_s = "", "un", 0.0, ""
         if escolha:
-            cod_sel = escolha.split(" - ")[0]
-            item = df_materiais[df_materiais['Codigo'].astype(str) == cod_sel].iloc[0]
-            nome_sel = item['Nome']
-            un_sug = item['Unidade']
-            preco_sug = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
+            cod_s = escolha.split(" - ")[0]
+            item = df_mat[df_mat['Codigo'].astype(str) == cod_s].iloc[0]
+            nome_s = item['Nome']
+            un_s = item['Unidade']
+            preco_s = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
 
-        with st.form("lancar", clear_on_submit=True):
+        with st.form("lanca_custo", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             dt = c1.date_input("Data")
-            c2.text_input("Item", value=nome_sel, disabled=True)
-            val = c3.number_input("Valor", value=preco_sug)
+            c2.text_input("Item", value=nome_s, disabled=True)
+            val = c3.number_input("Valor Unit", value=preco_s)
             c4, c5 = st.columns(2)
             qtd = c4.number_input("Qtd", 1.0)
-            etapa = c5.selectbox("Etapa", df_cronograma['Etapa'].tolist() if not df_cronograma.empty else ["Geral"])
+            
+            # Etapas apenas desta obra
+            etapas_obra = df_crono_f['Etapa'].unique().tolist() if not df_crono_f.empty else ["Geral"]
+            etapa = c5.selectbox("Etapa", etapas_obra)
             
             if st.form_submit_button("Salvar"):
-                if not escolha: st.error("Escolha um produto")
+                if not escolha: st.error("Selecione produto")
                 else:
-                    ws, _, _, _, _, _ = pegar_dados_seguro()
-                    if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
+                    ws, _, _, _, _, _, _ = pegar_dados_brutos()
+                    if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:K1", values=[COLS_CUSTOS])
                     
-                    ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, val*qtd, "Material", etapa, escolha_forn])
-                    st.success("Salvo!")
+                    # Salva com ID_OBRA na primeira coluna
+                    ws.append_row([obra_atual, str(dt), cod_s, nome_s, qtd, un_s, val, val*qtd, "Material", etapa, escolha_forn])
+                    st.success("Salvo na obra selecionada!")
                     st.cache_data.clear()
                     st.rerun()
 
-# --- TAB 2: CRONOGRAMA ---
-with tab_cronograma:
+# --- 2. CRONOGRAMA (FILTRADO) ---
+with tab_crono:
+    st.subheader(f"Cronograma - {nome_obra_atual}")
     c_new, c_list = st.columns([1, 2])
+    
     with c_new:
-        with st.form("new_etapa", clear_on_submit=True):
-            st.write("**Nova Etapa**")
-            nome = st.text_input("Nome")
-            orc = st.number_input("Meta (R$)", 0.0)
+        with st.form("new_stg", clear_on_submit=True):
+            nm = st.text_input("Nova Etapa")
+            orc = st.number_input("Orçamento Meta", 0.0)
             if st.form_submit_button("Criar"):
-                _, ws, _, _, _, _ = pegar_dados_seguro()
-                ws.append_row([nome, "Pendente", orc, 0])
-                st.success("Criado!")
+                _, ws, _, _, _, _, _ = pegar_dados_brutos()
+                # ID_Obra, Etapa, Status, Orcamento, Porcentagem
+                ws.append_row([obra_atual, nm, "Pendente", orc, 0])
+                st.success("Etapa criada!")
+                st.cache_data.clear()
+                st.rerun()
+                
+    st.divider()
+    if not df_crono_f.empty:
+        for i, row in df_crono_f.iterrows():
+            
+            with st.expander(f"📌 {row['Etapa']} ({row['Porcentagem']}%) | Meta: R$ {row['Orcamento']:,.2f}"):
+                t1, t2, t3 = st.tabs(["Progresso", "Checklist", "Editar"])
+                
+                with t1:
+                    novo_pct = st.slider("Executado", 0, 100, int(row['Porcentagem']), key=f"p_{row['row_num']}")
+                    if novo_pct != int(row['Porcentagem']):
+                        _, ws, _, _, _, _, _ = pegar_dados_brutos()
+                        ws.update_cell(row['row_num'], 5, novo_pct) # Col 5 é %
+                        st.cache_data.clear()
+                        st.rerun()
+                
+                with t2:
+                    pts = df_pontos_f[df_pontos_f['Etapa_Pai'] == row['Etapa']]
+                    for ix, p in pts.iterrows():
+                        chk = st.checkbox(p['Descricao'], value=(str(p['Feito']).upper()=='TRUE'), key=f"k_{p['row_num']}")
+                        if chk != (str(p['Feito']).upper()=='TRUE'):
+                            _, _, _, _, wsp, _, _ = pegar_dados_brutos()
+                            wsp.update_cell(p['row_num'], 4, "TRUE" if chk else "FALSE") # Col 4 é Feito
+                            st.cache_data.clear()
+                            st.rerun()
+                    with st.form(f"add_pt_{row['row_num']}", clear_on_submit=True):
+                        txt = st.text_input("Novo Ponto")
+                        if st.form_submit_button("Add"):
+                            _, _, _, _, wsp, _, _ = pegar_dados_brutos()
+                            wsp.append_row([obra_atual, row['Etapa'], txt, "FALSE"])
+                            st.cache_data.clear()
+                            st.rerun()
+                            
+                with t3:
+                    with st.form(f"ed_{row['row_num']}"):
+                        ne = st.text_input("Nome", row['Etapa'])
+                        oe = st.number_input("Meta", value=float(row['Orcamento']))
+                        if st.form_submit_button("Salvar"):
+                            _, ws, _, _, _, _, _ = pegar_dados_brutos()
+                            ws.update_cell(row['row_num'], 2, ne)
+                            ws.update_cell(row['row_num'], 4, oe)
+                            st.success("Salvo")
+                            st.cache_data.clear()
+                            st.rerun()
+
+# --- 3. TAREFAS (FILTRADO) ---
+with tab_tarefa:
+    st.subheader(f"Pendências - {nome_obra_atual}")
+    with st.expander("Nova Tarefa"):
+        with st.form("nt"):
+            d = st.text_input("Descrição")
+            r = st.text_input("Responsável")
+            dl = st.date_input("Prazo")
+            if st.form_submit_button("Criar"):
+                _, _, _, _, _, wst, _ = pegar_dados_brutos()
+                wst.append_row([obra_atual, str(dl), d, r, "Pendente"])
                 st.cache_data.clear()
                 st.rerun()
     
-    st.divider()
-    if not df_cronograma.empty:
-        for i, row in df_cronograma.iterrows():
-            nome_atual = row['Etapa']
-            pct = int(row.get('Porcentagem', 0))
-            orc_atual = float(row.get('Orcamento', 0))
-            
-            
-            with st.expander(f"📌 {nome_atual} ({pct}%) | Meta: R$ {orc_atual:,.2f}"):
-                t_prog, t_check, t_edit = st.tabs(["📊 Progresso", "✅ Checklist", "✏️ Editar"])
-                
-                with t_prog:
-                    novo_pct = st.slider(f"Executado", 0, 100, pct, key=f"s_{i}")
-                    if novo_pct != pct:
-                        _, ws, _, _, _, _ = pegar_dados_seguro()
-                        ws.update_cell(row['row_num'], 4, novo_pct)
-                        st.cache_data.clear()
-                        st.rerun()
-
-                with t_check:
-                    if not df_pontos.empty:
-                        pts = df_pontos[df_pontos['Etapa_Pai']==nome_atual]
-                        for idx, p in pts.iterrows():
-                            chk = st.checkbox(p['Descricao'], value=(str(p['Feito']).upper()=='TRUE'), key=f"pk_{p['row_num']}")
-                            if chk != (str(p['Feito']).upper()=='TRUE'):
-                                _, _, _, _, wsp, _ = pegar_dados_seguro()
-                                wsp.update_cell(p['row_num'], 3, "TRUE" if chk else "FALSE")
-                                st.cache_data.clear()
-                                st.rerun()
-                    
-                    with st.form(f"add_p_{i}", clear_on_submit=True):
-                        pt_txt = st.text_input("Novo Ponto")
-                        if st.form_submit_button("Add"):
-                            _, _, _, _, wsp, _ = pegar_dados_seguro()
-                            wsp.append_row([nome_atual, pt_txt, "FALSE"])
-                            st.cache_data.clear()
-                            st.rerun()
-
-                with t_edit:
-                    with st.form(f"edit_etapa_{i}"):
-                        nome_edit = st.text_input("Nome", value=nome_atual)
-                        orc_edit = st.number_input("Orçamento", value=orc_atual)
-                        if st.form_submit_button("Salvar Edição"):
-                            _, ws_crono, _, _, _, _ = pegar_dados_seguro()
-                            ws_crono.update_cell(row['row_num'], 1, nome_edit)
-                            ws_crono.update_cell(row['row_num'], 3, orc_edit)
-                            st.success("Atualizado!")
-                            st.cache_data.clear()
-                            st.rerun()
-
-# --- TAB 3: TAREFAS (NOVA ABA) ---
-with tab_tarefas:
-    st.write("### 📌 Caderno de Tarefas e Pendências")
-    
-    # 1. FORMULÁRIO DE NOVA TAREFA
-    with st.expander("➕ Adicionar Nova Tarefa", expanded=True):
-        with st.form("form_tarefa", clear_on_submit=True):
-            c1, c2, c3 = st.columns([2, 1, 1])
-            desc_t = c1.text_input("O que precisa ser feito?", placeholder="Ex: Comprar cimento, Ligar pro pedreiro...")
-            resp_t = c2.text_input("Responsável", placeholder="Quem?")
-            data_t = c3.date_input("Prazo Limite")
-            
-            if st.form_submit_button("Adicionar Tarefa"):
-                if desc_t:
-                    _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
-                    # Salva: Data, Descricao, Responsavel, Status
-                    ws_tarefas.append_row([str(data_t), desc_t, resp_t, "Pendente"])
-                    st.success("Tarefa anotada!")
-                    st.cache_data.clear()
+    if not df_tarefas_f.empty:
+        pend = df_tarefas_f[df_tarefas_f['Status']!='Concluída']
+        for i, t in pend.iterrows():
+            c1, c2, c3 = st.columns([0.5, 4, 0.5])
+            with c1:
+                if st.checkbox("", key=f"tc_{t['row_num']}"):
+                    _, _, _, _, _, wst, _ = pegar_dados_brutos()
+                    wst.update_cell(t['row_num'], 5, "Concluída")
                     st.rerun()
-                else:
-                    st.warning("Escreva a descrição da tarefa.")
+            with c2: st.write(f"**{t['Descricao']}** ({t['Responsavel']}) - {t['Data_Limite']}")
+            with c3:
+                if st.button("🗑️", key=f"td_{t['row_num']}"):
+                    _, _, _, _, _, wst, _ = pegar_dados_brutos()
+                    wst.delete_rows(t['row_num'])
+                    st.rerun()
 
-    st.divider()
-
-    # 2. LISTA DE TAREFAS PENDENTES
-    st.subheader("⚠️ Pendentes")
-    if not df_tarefas.empty:
-        pendentes = df_tarefas[df_tarefas['Status'] != 'Concluída']
-        
-        if pendentes.empty:
-            st.info("Nenhuma pendência! Tudo em dia.")
-        else:
-            for i, t in pendentes.iterrows():
-                # Layout de cartão para a tarefa
-                col_check, col_info, col_del = st.columns([0.5, 4, 0.5])
-                
-                with col_check:
-                    # Checkbox para concluir
-                    if st.checkbox("", key=f"t_check_{t['row_num']}"):
-                        _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
-                        ws_tarefas.update_cell(t['row_num'], 4, "Concluída")
-                        st.balloons()
-                        st.cache_data.clear()
-                        time.sleep(1)
-                        st.rerun()
-                
-                with col_info:
-                    st.markdown(f"**{t['Descricao']}**")
-                    st.caption(f"📅 Prazo: {t['Data_Limite']} | 👤 Resp: {t['Responsavel']}")
-                
-                with col_del:
-                    if st.button("🗑️", key=f"del_t_{t['row_num']}"):
-                        _, _, _, _, _, ws_tarefas = pegar_dados_seguro()
-                        ws_tarefas.delete_rows(t['row_num'])
-                        st.cache_data.clear()
-                        st.rerun()
-                st.write("---")
-
-    # 3. TAREFAS CONCLUÍDAS (EXPANSÍVEL)
-    with st.expander("Ver Tarefas Concluídas"):
-        if not df_tarefas.empty:
-            feitas = df_tarefas[df_tarefas['Status'] == 'Concluída']
-            if not feitas.empty:
-                st.dataframe(feitas[['Data_Limite', 'Descricao', 'Responsavel']], use_container_width=True)
-            else:
-                st.caption("Nenhuma tarefa concluída ainda.")
-
-# --- TAB 4: CADASTROS ---
-with tab_cadastros:
-    sub1, sub2 = st.tabs(["Materiais", "Fornecedores"])
-    with sub1:
+# --- 4. CADASTROS (GLOBAIS) ---
+with tab_cad:
+    st.info("💡 Materiais e Fornecedores são globais (compartilhados entre todas as obras).")
+    s1, s2 = st.tabs(["Materiais", "Fornecedores"])
+    with s1:
         c1, c2 = st.columns(2)
         with c1:
-            st.write("Novo Material")
-            pid = proximo_id(df_materiais)
-            with st.form("fm", clear_on_submit=True):
+            pid = proximo_id(df_mat)
+            with st.form("mat"):
                 st.text_input("ID", pid, disabled=True)
-                nm = st.text_input("Nome")
-                un = st.selectbox("Un", ["un","m","kg","sc","m²"])
-                ref = st.number_input("R$", 0.0)
+                n = st.text_input("Nome")
+                u = st.selectbox("Un", ["un","m","kg","sc"])
+                v = st.number_input("R$")
                 if st.form_submit_button("Salvar"):
-                    _, _, ws, _, _, _ = pegar_dados_seguro()
-                    ws.append_row([pid, nm, un, ref])
+                    _, _, ws, _, _, _, _ = pegar_dados_brutos()
+                    ws.append_row([pid, n, u, v])
                     st.cache_data.clear()
                     st.rerun()
-        with c2:
-            if not df_materiais.empty: st.dataframe(df_materiais[['Codigo','Nome','Unidade']])
-            
-    with sub2:
+        with c2: st.dataframe(df_mat[['Codigo','Nome']])
+    
+    with s2:
         c1, c2 = st.columns(2)
         with c1:
-            st.write("Novo Fornecedor")
-            fid = proximo_id(df_fornecedores)
-            with st.form("ff", clear_on_submit=True):
+            fid = proximo_id(df_forn)
+            with st.form("forn"):
                 st.text_input("ID", fid, disabled=True)
-                fn = st.text_input("Nome")
-                ft = st.text_input("Tel")
-                fc = st.selectbox("Cat", ["Material", "Serviço"])
+                n = st.text_input("Nome")
+                t = st.text_input("Tel")
+                c = st.selectbox("Cat", ["Material", "Serviço"])
                 if st.form_submit_button("Salvar"):
-                    _, _, _, ws, _, _ = pegar_dados_seguro()
-                    ws.append_row([fid, fn, ft, fc])
+                    _, _, _, ws, _, _, _ = pegar_dados_brutos()
+                    ws.append_row([fid, n, t, c])
                     st.cache_data.clear()
                     st.rerun()
-        with c2:
-            if not df_fornecedores.empty: st.dataframe(df_fornecedores[['Codigo','Nome']])
+        with c2: st.dataframe(df_forn[['Codigo','Nome']])
 
-# --- TAB 5: HISTÓRICO ---
-with tab_historico:
-    orc = df_cronograma['Orcamento'].sum() if not df_cronograma.empty and 'Orcamento' in df_cronograma.columns else 0
-    real = df_custos['Total'].sum() if not df_custos.empty and 'Total' in df_custos.columns else 0
+# --- 5. HISTÓRICO (FILTRADO) ---
+with tab_hist:
+    st.subheader(f"Financeiro - {nome_obra_atual}")
+    orc = df_crono_f['Orcamento'].sum() if not df_crono_f.empty else 0
+    real = df_custos_f['Total'].sum() if not df_custos_f.empty else 0
     
     k1, k2, k3 = st.columns(3)
-    k1.metric("Orçamento", f"R$ {orc:,.2f}")
-    k2.metric("Gasto", f"R$ {real:,.2f}")
+    k1.metric("Orçado", f"R$ {orc:,.2f}")
+    k2.metric("Realizado", f"R$ {real:,.2f}")
     k3.metric("Saldo", f"R$ {orc-real:,.2f}", delta=orc-real)
     
     st.divider()
-    if not df_custos.empty:
-        df_show = df_custos.copy()
+    if not df_custos_f.empty:
+        df_show = df_custos_f.copy()
         df_show.insert(0, "Excluir", False)
+        # Esconde ID_Obra da visualização pois já sabemos qual é
+        cols = ["Excluir", "Data", "Fornecedor", "Descricao", "Valor", "Total", "Etapa"]
         
-        edited = st.data_editor(
-            df_show[["Excluir","Data","Fornecedor","Descricao","Valor","Total","Etapa"]],
-            hide_index=True, use_container_width=True,
-            disabled=["Data","Fornecedor","Descricao","Valor","Total","Etapa"]
-        )
+        edited = st.data_editor(df_show[cols], hide_index=True, use_container_width=True)
         
         dels = edited[edited["Excluir"]==True]
         if not dels.empty and st.button("Confirmar Exclusão"):
-            ws, _, _, _, _, _ = pegar_dados_seguro()
-            rows = df_custos.loc[dels.index, "row_num"].tolist()
+            ws, _, _, _, _, _, _ = pegar_dados_brutos()
+            rows = df_custos.loc[dels.index, "row_num"].tolist() # Pega row_num original
             rows.sort(reverse=True)
             for r in rows: ws.delete_rows(r)
-            st.success("Feito!")
+            st.success("Apagado")
             st.cache_data.clear()
             st.rerun()
 
