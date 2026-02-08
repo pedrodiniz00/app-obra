@@ -60,50 +60,62 @@ def conectar_gsheets():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
     return gspread.authorize(creds)
 
-def pegar_planilhas_escrita():
+# --- 3. FUNÇÃO DE AUTO-REPARO (A CURA DO ERRO) ---
+def inicializar_sistema():
+    """Verifica se todas as abas existem. Se não, cria. Roda no início."""
     client = conectar_gsheets()
-    sh = client.open("Dados_Obra")
-    
-    # CRONOGRAMA
-    try: ws_crono = sh.worksheet("Cronograma")
-    except: 
-        ws_crono = sh.add_worksheet("Cronograma", 100, 5)
-        ws_crono.append_row(COLS_CRONO)
-        time.sleep(1) # Espera o Google processar
-    
-    # MATERIAIS
-    try: ws_mat = sh.worksheet("Materiais")
-    except: 
-        ws_mat = sh.add_worksheet("Materiais", 100, 4)
-        ws_mat.append_row(COLS_MATERIAIS)
-        time.sleep(1)
-
-    # FORNECEDORES
-    try: ws_forn = sh.worksheet("Fornecedores")
+    try:
+        sh = client.open("Dados_Obra")
     except:
-        ws_forn = sh.add_worksheet("Fornecedores", 100, 4)
-        ws_forn.append_row(COLS_FORNECEDORES)
-        time.sleep(1)
+        st.error("ERRO CRÍTICO: Não encontrei a planilha 'Dados_Obra'. Crie ela no Google Sheets primeiro.")
+        st.stop()
+    
+    # Lista de abas necessárias e suas colunas
+    abas_necessarias = {
+        "Cronograma": COLS_CRONO,
+        "Materiais": COLS_MATERIAIS,
+        "Fornecedores": COLS_FORNECEDORES,
+        "Pontos_Criticos": COLS_PONTOS
+    }
+    
+    worksheets = {ws.title: ws for ws in sh.worksheets()}
+    
+    for nome_aba, colunas in abas_necessarias.items():
+        if nome_aba not in worksheets:
+            with st.spinner(f"Criando aba {nome_aba}..."):
+                sh.add_worksheet(nome_aba, 100, len(colunas))
+                # Pega a aba recém criada
+                ws_nova = sh.worksheet(nome_aba)
+                ws_nova.append_row(colunas)
+                time.sleep(2) # PAUSA IMPORTANTE PARA O GOOGLE NÃO BLOQUEAR
+        else:
+            # Se existe, verifica se tem cabeçalho
+            ws = worksheets[nome_aba]
+            if not ws.row_values(1):
+                ws.append_row(colunas)
 
-    # PONTOS CRITICOS (Esta parte estava dando erro)
-    try: ws_pontos = sh.worksheet("Pontos_Criticos")
-    except:
-        ws_pontos = sh.add_worksheet("Pontos_Criticos", 200, 3)
-        ws_pontos.append_row(COLS_PONTOS)
-        time.sleep(1)
-        
-    return sh.sheet1, ws_crono, ws_mat, ws_forn, ws_pontos
+    return sh
+
+# Chama a inicialização AGORA, antes de carregar dados
+sh_global = inicializar_sistema()
+
+def pegar_planilhas_escrita():
+    # Usa a conexão global já verificada
+    return (
+        sh_global.sheet1, 
+        sh_global.worksheet("Cronograma"), 
+        sh_global.worksheet("Materiais"), 
+        sh_global.worksheet("Fornecedores"),
+        sh_global.worksheet("Pontos_Criticos")
+    )
 
 @st.cache_data(ttl=5)
 def carregar_dados_completo():
-    client = conectar_gsheets()
-    if not client: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    # Usa a planilha global já carregada
     
-    sh = client.open("Dados_Obra")
-
     # CUSTOS
     try:
-        ws = sh.sheet1
+        ws = sh_global.sheet1
         dados = ws.get_all_records()
         df_custos = pd.DataFrame(dados)
         if not df_custos.empty:
@@ -115,9 +127,8 @@ def carregar_dados_completo():
 
     # CRONOGRAMA
     try:
-        ws_c = sh.worksheet("Cronograma")
-        dados_c = ws_c.get_all_records()
-        df_crono = pd.DataFrame(dados_c)
+        ws_c = sh_global.worksheet("Cronograma")
+        df_crono = pd.DataFrame(ws_c.get_all_records())
         if not df_crono.empty:
             df_crono['row_num'] = df_crono.index + 2
             if 'Orcamento' in df_crono.columns: df_crono['Orcamento'] = df_crono['Orcamento'].apply(limpar_dinheiro)
@@ -126,33 +137,34 @@ def carregar_dados_completo():
 
     # MATERIAIS
     try:
-        df_materiais = pd.DataFrame(sh.worksheet("Materiais").get_all_records())
+        df_materiais = pd.DataFrame(sh_global.worksheet("Materiais").get_all_records())
         if not df_materiais.empty: df_materiais['row_num'] = df_materiais.index + 2
     except: df_materiais = pd.DataFrame()
 
     # FORNECEDORES
     try:
-        df_fornecedores = pd.DataFrame(sh.worksheet("Fornecedores").get_all_records())
+        df_fornecedores = pd.DataFrame(sh_global.worksheet("Fornecedores").get_all_records())
         if not df_fornecedores.empty: df_fornecedores['row_num'] = df_fornecedores.index + 2
     except: df_fornecedores = pd.DataFrame()
 
     # PONTOS CRITICOS
     try:
-        ws_p = sh.worksheet("Pontos_Criticos")
-        dados_p = ws_p.get_all_records()
-        df_pontos = pd.DataFrame(dados_p)
+        ws_p = sh_global.worksheet("Pontos_Criticos")
+        df_pontos = pd.DataFrame(ws_p.get_all_records())
         if not df_pontos.empty: df_pontos['row_num'] = df_pontos.index + 2
     except: df_pontos = pd.DataFrame()
 
     return df_custos, df_crono, df_materiais, df_fornecedores, df_pontos
 
-# --- 3. INTERFACE ---
+# --- 4. INTERFACE ---
 st.title("🏗️ Gestor de Obras ERP")
+
+# Carrega dados (agora seguro)
 df_custos, df_cronograma, df_materiais, df_fornecedores, df_pontos = carregar_dados_completo()
 
 # --- SIDEBAR LIMPA ---
 with st.sidebar:
-    st.info("Navegue pelas abas acima para gerenciar a obra.")
+    st.info("Sistema Online ✅")
     if st.button("Sair"):
         st.session_state["password_correct"] = False
         st.rerun()
@@ -204,7 +216,9 @@ with tab_lancamento:
                     st.error("Selecione um produto!")
                 else:
                     ws, _, _, _, _ = pegar_planilhas_escrita()
+                    # Verifica cabeçalho da sheet1
                     if ws.row_values(1) != COLS_CUSTOS: ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
+                    
                     total = val * qtd
                     ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, total, "Material", etapa, escolha_forn])
                     st.success("Salvo!")
@@ -227,7 +241,6 @@ with tab_cronograma:
             orcamento_meta = st.number_input("Orçamento Previsto (R$)", 0.0)
             if st.form_submit_button("➕ Adicionar Etapa"):
                 _, ws_c, _, _, _ = pegar_planilhas_escrita()
-                if ws_c.row_values(1) != COLS_CRONO: ws_c.update(range_name="A1:D1", values=[COLS_CRONO])
                 ws_c.append_row([nome_etapa, "Pendente", orcamento_meta, 0])
                 st.success("Etapa Criada!")
                 st.cache_data.clear()
@@ -244,7 +257,6 @@ with tab_cronograma:
             try: pct_atual = int(row['Porcentagem'])
             except: pct_atual = 0
             
-            # Cabeçalho do Cartão
             
             with st.expander(f"📌 {nome}  |  Status: {pct_atual}%  |  Orçamento: R$ {row.get('Orcamento',0):,.2f}", expanded=False):
                 c_edit1, c_edit2 = st.columns([1, 1])
@@ -252,11 +264,11 @@ with tab_cronograma:
                 # A. EDITAR PORCENTAGEM
                 with c_edit1:
                     st.write("**Progresso Físico**")
-                    novo_pct = st.slider(f"% Concluído ({nome})", 0, 100, pct_atual, key=f"sld_{i}")
+                    novo_pct = st.slider(f"% Concluído", 0, 100, pct_atual, key=f"sld_{i}")
                     if novo_pct != pct_atual:
                         _, ws_c, _, _, _ = pegar_planilhas_escrita()
                         ws_c.update_cell(row['row_num'], 4, novo_pct)
-                        st.toast(f"Progresso atualizado!")
+                        st.toast(f"Atualizado para {novo_pct}%")
                         st.cache_data.clear()
                         time.sleep(1)
                         st.rerun()
@@ -268,15 +280,10 @@ with tab_cronograma:
                     if not df_pontos.empty:
                         pontos_etapa = df_pontos[df_pontos['Etapa_Pai'] == nome]
                         for idx_p, row_p in pontos_etapa.iterrows():
-                            # Converte string 'TRUE'/'FALSE' para bool
                             is_checked = str(row_p['Feito']).upper() == 'TRUE'
-                            
-                            # Checkbox com chave única
                             check = st.checkbox(row_p['Descricao'], value=is_checked, key=f"chk_{row_p['row_num']}")
-                            
                             if check != is_checked:
                                 _, _, _, _, ws_p = pegar_planilhas_escrita()
-                                # Atualiza coluna 3 (Feito)
                                 ws_p.update_cell(row_p['row_num'], 3, "TRUE" if check else "FALSE")
                                 st.cache_data.clear()
                                 st.rerun()
