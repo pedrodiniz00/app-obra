@@ -154,13 +154,12 @@ with st.sidebar:
         st.rerun()
 
 # ==============================================================================
-# MENU PRINCIPAL (TABS)
+# TABS PRINCIPAIS
 # ==============================================================================
-# Aqui criamos a estrutura principal do aplicativo
-tab_lancamento, tab_cadastros, tab_historico = st.tabs(["📝 Lançar Gastos", "📦 Cadastros", "📋 Histórico"])
+tab_lancamento, tab_cadastros, tab_historico = st.tabs(["📝 Lançar Gastos", "📦 Cadastros", "📊 Dashboard & Histórico"])
 
 # ------------------------------------------------------------------------------
-# ABA 1: LANÇAMENTO (PRINCIPAL)
+# ABA 1: LANÇAMENTO
 # ------------------------------------------------------------------------------
 with tab_lancamento:
     st.write("### Novo Lançamento")
@@ -168,18 +167,15 @@ with tab_lancamento:
     if df_materiais.empty:
         st.warning("⚠️ Você precisa cadastrar materiais na aba 'Cadastros' antes de lançar.")
     else:
-        # 1. Filtro Material
         df_materiais['Display'] = df_materiais['Codigo'].astype(str) + " - " + df_materiais['Nome']
         escolha = st.selectbox("Buscar Produto:", [""] + df_materiais['Display'].tolist())
         
-        # 2. Filtro Fornecedor
         lista_forn = ["Sem Fornecedor"]
         if not df_fornecedores.empty:
             df_fornecedores['DisplayF'] = df_fornecedores['Codigo'].astype(str) + " - " + df_fornecedores['Nome']
             lista_forn += df_fornecedores['DisplayF'].tolist()
         escolha_forn = st.selectbox("Fornecedor:", lista_forn)
 
-        # 3. Lógica de Preenchimento
         nome_sel, un_sug, preco_sug, cod_sel = "", "un", 0.0, ""
         if escolha:
             cod_sel = escolha.split(" - ")[0]
@@ -190,7 +186,6 @@ with tab_lancamento:
                 un_sug = item['Unidade']
                 preco_sug = float(item['Preco_Ref']) if item['Preco_Ref'] else 0.0
 
-        # 4. Formulário
         with st.form("lancar", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             dt = c1.date_input("Data")
@@ -206,13 +201,11 @@ with tab_lancamento:
                     st.error("Erro: Selecione um produto!")
                 else:
                     ws, _, _, _ = pegar_planilhas_escrita()
-                    # Garante cabeçalho
                     if ws.row_values(1) != COLS_CUSTOS:
                         ws.update(range_name="A1:J1", values=[COLS_CUSTOS])
                     
                     total = val * qtd
                     forn_txt = escolha_forn
-                    
                     ws.append_row([str(dt), cod_sel, nome_sel, qtd, un_sug, val, total, "Material", etapa, forn_txt])
                     st.success("Lançamento salvo!")
                     st.cache_data.clear()
@@ -220,25 +213,22 @@ with tab_lancamento:
                     st.rerun()
 
 # ------------------------------------------------------------------------------
-# ABA 2: CADASTROS (MATERIAIS E FORNECEDORES)
+# ABA 2: CADASTROS
 # ------------------------------------------------------------------------------
 with tab_cadastros:
     st.write("### Gerenciar Cadastros")
     subtab_mat, subtab_forn = st.tabs(["Materiais", "Fornecedores"])
 
-    # SUB-ABA MATERIAIS
     with subtab_mat:
         c_form, c_lista = st.columns([1, 2])
         with c_form:
             st.info("**Novo Material**")
             prox_cod_mat = proximo_id(df_materiais)
-            
             with st.form("form_mat", clear_on_submit=True):
                 st.text_input("Código", value=prox_cod_mat, disabled=True)
                 nome = st.text_input("Nome")
                 un = st.selectbox("Unidade", ["un","m","kg","sc","m²","m³","lt","cx"])
                 ref = st.number_input("R$ Ref", 0.0)
-                
                 if st.form_submit_button("➕ Cadastrar"):
                     if nome:
                         _, _, ws_m, _ = pegar_planilhas_escrita()
@@ -251,21 +241,17 @@ with tab_cadastros:
         with c_lista:
             if not df_materiais.empty:
                 st.dataframe(df_materiais[['Codigo', 'Nome', 'Unidade']], height=300, use_container_width=True)
-            else: st.info("Nenhum material cadastrado.")
 
-    # SUB-ABA FORNECEDORES
     with subtab_forn:
         c_form_f, c_lista_f = st.columns([1, 2])
         with c_form_f:
             st.info("**Novo Fornecedor**")
             prox_cod_forn = proximo_id(df_fornecedores)
-            
             with st.form("form_forn", clear_on_submit=True):
                 st.text_input("Código", value=prox_cod_forn, disabled=True)
                 fn = st.text_input("Nome da Empresa")
                 ft = st.text_input("Telefone")
                 fcat = st.selectbox("Categoria", ["Material", "Serviço", "Mão de Obra"])
-                
                 if st.form_submit_button("➕ Cadastrar"):
                     if fn:
                         _, _, _, ws_f = pegar_planilhas_escrita()
@@ -278,13 +264,69 @@ with tab_cadastros:
         with c_lista_f:
             if not df_fornecedores.empty:
                 st.dataframe(df_fornecedores[['Codigo', 'Nome', 'Telefone']], height=300, use_container_width=True)
-            else: st.info("Nenhum fornecedor cadastrado.")
 
 # ------------------------------------------------------------------------------
-# ABA 3: HISTÓRICO
+# ABA 3: DASHBOARD & HISTÓRICO (AQUI ESTÁ A MUDANÇA)
 # ------------------------------------------------------------------------------
 with tab_historico:
-    st.write("### Histórico Geral da Obra")
+    # 1. CÁLCULOS DO ORÇAMENTO
+    total_orcado = df_cronograma['Orcamento'].sum() if not df_cronograma.empty and 'Orcamento' in df_cronograma.columns else 0.0
+    total_realizado = df_custos['Total'].sum() if not df_custos.empty and 'Total' in df_custos.columns else 0.0
+    saldo = total_orcado - total_realizado
+    percentual_uso = (total_realizado / total_orcado) if total_orcado > 0 else 0.0
+    
+    # 2. EXIBIÇÃO DOS BIG NUMBERS
+    st.markdown("### 📊 Performance Financeira")
+    
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Orçamento Total (Planejado)", f"R$ {total_orcado:,.2f}")
+    k2.metric("Total Gasto (Realizado)", f"R$ {total_realizado:,.2f}", delta=f"{(percentual_uso*100):.1f}% usado", delta_color="inverse")
+    k3.metric("Saldo Disponível", f"R$ {saldo:,.2f}", delta=saldo)
+    
+    # Barra de Progresso com cor condicional
+    st.write("Progresso do Orçamento:")
+    
+    # Trava em 100% visualmente se estourar, mas avisa
+    prog_visual = min(percentual_uso, 1.0)
+    
+    if percentual_uso > 1.0:
+        st.error(f"⚠️ ATENÇÃO: O orçamento foi estourado em {(percentual_uso-1)*100:.1f}%!")
+        st.progress(1.0) # Barra cheia vermelha (na prática o st.progress não muda cor fácil, mas o aviso ajuda)
+    elif percentual_uso > 0.8:
+        st.warning(f"Cuidado: Você já usou {percentual_uso*100:.1f}% do orçamento.")
+        st.progress(prog_visual)
+    else:
+        st.success(f"Orçamento saudável. {percentual_uso*100:.1f}% utilizado.")
+        st.progress(prog_visual)
+
+    # 3. DETALHAMENTO POR ETAPA (NOVO)
+    with st.expander("🔎 Ver Detalhe por Etapa (Orçado vs Realizado)"):
+        if not df_cronograma.empty:
+            # Agrupa gastos por etapa
+            gastos_por_etapa = df_custos.groupby('Etapa')['Total'].sum().reset_index() if not df_custos.empty else pd.DataFrame(columns=['Etapa', 'Total'])
+            
+            # Junta com o cronograma (que tem o orçamento)
+            resumo = pd.merge(df_cronograma[['Etapa', 'Orcamento']], gastos_por_etapa, on='Etapa', how='left').fillna(0)
+            resumo.rename(columns={'Total': 'Gasto Real'}, inplace=True)
+            resumo['Saldo'] = resumo['Orcamento'] - resumo['Gasto Real']
+            
+            # Mostra tabela formatada
+            st.dataframe(
+                resumo,
+                column_config={
+                    "Orcamento": st.column_config.NumberColumn("Meta", format="R$ %.2f"),
+                    "Gasto Real": st.column_config.NumberColumn("Gasto", format="R$ %.2f"),
+                    "Saldo": st.column_config.NumberColumn("Saldo", format="R$ %.2f"),
+                    "Etapa": st.column_config.TextColumn("Etapa da Obra")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+
+    st.divider()
+
+    # 4. TABELA DE HISTÓRICO (Como estava antes)
+    st.write("### 📋 Lista Detalhada de Compras")
     
     if not df_custos.empty:
         df_show = df_custos.copy()
@@ -316,9 +358,8 @@ with tab_historico:
             st.cache_data.clear()
             st.rerun()
             
-        # Botão PDF
         st.divider()
-        if st.button("📄 Baixar PDF do Relatório"):
+        if st.button("📄 Baixar Relatório PDF"):
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Arial", "B", 16)
@@ -328,9 +369,11 @@ with tab_historico:
             
             soma = df_custos['Total'].sum() if 'Total' in df_custos.columns else 0
             pdf.cell(0, 10, f"Total Geral: R$ {soma:,.2f}", 0, 1)
+            pdf.cell(0, 10, f"Orçamento: R$ {total_orcado:,.2f}", 0, 1)
             st.download_button("Download PDF", pdf.output(dest='S').encode('latin-1'), "relatorio.pdf")
             
     else:
         st.info("Nenhum lançamento feito ainda.")
+
 
 
