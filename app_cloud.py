@@ -53,6 +53,7 @@ def carregar_tudo():
             if df.empty: df = pd.DataFrame(columns=['id', 'id_obra', 'valor', 'total', 'qtd', 'descricao', 'data', 'etapa'])
             else: df['data'] = pd.to_datetime(df['data']).dt.date
         if tbl == 'obras':
+            if 'status' not in df.columns: df['status'] = 'Ativa'
             if 'orcamento_pedreiro' not in df.columns: df['orcamento_pedreiro'] = 0.0
             if 'orcamento_cliente' not in df.columns: df['orcamento_cliente'] = 0.0
             if df.empty: df = pd.DataFrame(columns=['id', 'nome', 'status', 'orcamento_pedreiro', 'orcamento_cliente'])
@@ -81,27 +82,27 @@ DB = carregar_tudo()
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = "📝 Lançar"
 
-# --- SIDEBAR (MENU ESQUERDO RESTAURADO) ---
+# --- SIDEBAR (COM LIXEIRA/ARQUIVO) ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
     nome_obra_atual = "Sem Obra"
-    orc_pedreiro_atual = 0.0
-    orc_cliente_atual = 0.0
+    
+    # Filtrar apenas obras Ativas para o seletor principal
+    obras_ativas = DB['obras'][DB['obras']['status'] == 'Ativa'] if not DB['obras'].empty else pd.DataFrame()
 
-    if DB['obras'].empty:
-        st.warning("Nenhuma obra cadastrada.")
+    if obras_ativas.empty:
+        st.warning("Nenhuma obra ativa.")
     else:
-        opcoes = DB['obras'].apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
+        opcoes = obras_ativas.apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
         selecao = st.selectbox("Selecione a Obra:", opcoes)
         try:
             temp_id = int(selecao.split(" - ")[0])
-            if temp_id in DB['obras']['id'].values:
-                id_obra_atual = temp_id
-                nome_obra_atual = selecao.split(" - ")[1]
-                obra_row = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
-                orc_pedreiro_atual = float(obra_row.get('orcamento_pedreiro', 0.0))
-                orc_cliente_atual = float(obra_row.get('orcamento_cliente', 0.0))
+            id_obra_atual = temp_id
+            nome_obra_atual = selecao.split(" - ")[1]
+            obra_row = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
+            orc_pedreiro_atual = float(obra_row.get('orcamento_pedreiro', 0.0))
+            orc_cliente_atual = float(obra_row.get('orcamento_cliente', 0.0))
         except: id_obra_atual = 0
 
     st.markdown("---")
@@ -114,31 +115,47 @@ with st.sidebar:
                 if n_nome:
                     res = supabase.table("obras").insert({"nome": n_nome, "status": "Ativa"}).execute()
                     new_id = res.data[0]['id']
-                    # Criar Cronograma Base
                     lista_crono = [{"id_obra": new_id, "etapa": str(e), "status": "Pendente", "orcamento": float(o), "porcentagem": 0} for e, o, _ in TEMPLATE_ETAPAS]
                     supabase.table("cronograma").insert(lista_crono).execute()
                     st.success("Obra Criada!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
-    # BOTAO EXCLUIR OBRA
+    # BOTAO ARQUIVAR (O antigo excluir)
     if id_obra_atual > 0:
-        st.markdown("---")
-        if st.button("🗑️ Excluir Obra Atual", type="primary"):
-            # Deletar tudo ligado a essa obra
-            supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
-            supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).execute()
-            supabase.table("tarefas").delete().eq("id_obra", id_obra_atual).execute()
-            supabase.table("obras").delete().eq("id", id_obra_atual).execute()
-            st.success("Obra e dados excluídos!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+        if st.button("📦 Arquivar Obra Atual"):
+            supabase.table("obras").update({"status": "Arquivada"}).eq("id", id_obra_atual).execute()
+            st.warning("Obra movida para o arquivo!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+
+    st.markdown("---")
+    # LIXEIRA / ARQUIVO
+    with st.expander("🗄️ Obras Arquivadas"):
+        obras_arquivadas = DB['obras'][DB['obras']['status'] == 'Arquivada'] if not DB['obras'].empty else pd.DataFrame()
+        if obras_arquivadas.empty:
+            st.write("Arquivo vazio.")
+        else:
+            for _, arq in obras_arquivadas.iterrows():
+                st.write(f"**{arq['nome']}**")
+                col_arq1, col_arq2 = st.columns(2)
+                if col_arq1.button("🔄", key=f"res_{arq['id']}", help="Restaurar"):
+                    supabase.table("obras").update({"status": "Ativa"}).eq("id", arq['id']).execute()
+                    st.cache_data.clear(); st.rerun()
+                if col_arq2.button("🗑️", key=f"del_{arq['id']}", help="Excluir Definitivo"):
+                    # Aqui apaga de verdade
+                    supabase.table("custos").delete().eq("id_obra", arq['id']).execute()
+                    supabase.table("cronograma").delete().eq("id_obra", arq['id']).execute()
+                    supabase.table("tarefas").delete().eq("id_obra", arq['id']).execute()
+                    supabase.table("obras").delete().eq("id", arq['id']).execute()
+                    st.error("Excluído para sempre!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
 if id_obra_atual == 0:
     st.info("👈 Selecione ou crie uma obra no menu lateral.")
     st.stop()
 
+# --- CARREGAMENTO DE DADOS DA OBRA ATIVA ---
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual] if not DB['custos'].empty else pd.DataFrame()
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual] if not DB['cronograma'].empty else pd.DataFrame()
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual] if not DB['tarefas'].empty else pd.DataFrame()
 
-# --- ABAS ---
+# --- ABAS (Mantendo a estrutura existente) ---
 lista_abas = ["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"]
 tabs = st.tabs(lista_abas)
 
@@ -201,7 +218,7 @@ with tabs[4]:
         st.metric("Total Gasto Geral", formatar_moeda(custos_f['total'].sum()))
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. PAGAMENTOS
+# 6. PAGAMENTOS (PAGAMENTOS E RECEBIMENTOS SEPARADOS)
 with tabs[5]:
     st.session_state.active_tab = "💰 Pagamentos"
     st.subheader(f"💰 Gestão Financeira - {nome_obra_atual}")
