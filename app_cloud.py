@@ -49,17 +49,12 @@ def carregar_tudo():
     dados = {}
     for tbl in ["obras", "custos", "cronograma", "tarefas"]:
         df = run_query(tbl)
-        if tbl == 'obras' and not df.empty:
-            # Proteção Crítica contra KeyError: garante que as colunas existam no DataFrame
-            for col in ['status', 'orcamento_pedreiro', 'orcamento_cliente']:
-                if col not in df.columns: 
-                    df[col] = "Ativa" if col == 'status' else 0.0
-        elif tbl == 'obras' and df.empty:
-            df = pd.DataFrame(columns=['id', 'nome', 'status', 'orcamento_pedreiro', 'orcamento_cliente'])
-        
+        if tbl == 'obras':
+            for col in ['orcamento_pedreiro', 'orcamento_cliente']:
+                if col not in df.columns: df[col] = 0.0
+            if df.empty: df = pd.DataFrame(columns=['id', 'nome', 'orcamento_pedreiro', 'orcamento_cliente'])
         if tbl == 'custos' and not df.empty:
             df['data'] = pd.to_datetime(df['data']).dt.date
-            
         dados[tbl] = df
     return dados
 
@@ -78,9 +73,8 @@ if not st.session_state["password_correct"]:
 
 # --- INTERFACE ---
 DB = carregar_tudo()
-if "active_tab" not in st.session_state: st.session_state.active_tab = "📝 Lançar"
 
-# --- SIDEBAR RESTAURADA ---
+# --- SIDEBAR (SISTEMA DE EXCLUSÃO DIRETA RESTAURADO) ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -88,95 +82,59 @@ with st.sidebar:
     orc_pedreiro_atual = 0.0
     orc_cliente_atual = 0.0
 
-    obras_ativas = DB['obras'][DB['obras']['status'] == 'Ativa'] if not DB['obras'].empty else pd.DataFrame()
-    
-    if not obras_ativas.empty:
-        opcoes = obras_ativas.apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
-        selecao = st.selectbox("Selecione a Obra:", opcoes)
-        id_obra_atual = int(selecao.split(" - ")[0])
-        nome_obra_atual = selecao.split(" - ")[1]
-        row = obras_ativas[obras_ativas['id'] == id_obra_atual].iloc[0]
-        orc_pedreiro_atual = float(row.get('orcamento_pedreiro', 0))
-        orc_cliente_atual = float(row.get('orcamento_cliente', 0))
+    if DB['obras'].empty:
+        st.warning("Nenhuma obra cadastrada.")
     else:
-        st.warning("Nenhuma obra ativa.")
+        opcoes = DB['obras'].apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
+        selecao = st.selectbox("Selecione a Obra:", opcoes)
+        try:
+            temp_id = int(selecao.split(" - ")[0])
+            id_obra_atual = temp_id
+            nome_obra_atual = selecao.split(" - ")[1]
+            row = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
+            orc_pedreiro_atual = float(row.get('orcamento_pedreiro', 0))
+            orc_cliente_atual = float(row.get('orcamento_cliente', 0))
+        except: id_obra_atual = 0
 
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
         n_nome = st.text_input("Nome da Obra")
-        if st.button("Criar"):
+        if st.button("Criar Obra"):
             if n_nome:
-                res = supabase.table("obras").insert({"nome": n_nome, "status": "Ativa"}).execute()
-                st.cache_data.clear(); st.rerun()
+                res = supabase.table("obras").insert({"nome": n_nome}).execute()
+                new_id = res.data[0]['id']
+                lista_crono = [{"id_obra": new_id, "etapa": str(e), "porcentagem": 0} for e, _ in TEMPLATE_ETAPAS]
+                supabase.table("cronograma").insert(lista_crono).execute()
+                st.success("Obra Criada!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
     if id_obra_atual > 0:
-        if st.button("📦 Arquivar Obra"):
-            supabase.table("obras").update({"status": "Arquivada"}).eq("id", id_obra_atual).execute()
-            st.cache_data.clear(); st.rerun()
-
-    with st.expander("🗄️ Arquivadas"):
-        obras_arq = DB['obras'][DB['obras']['status'] == 'Arquivada'] if not DB['obras'].empty else pd.DataFrame()
-        if obras_arq.empty: st.write("Vazio")
-        for _, arq in obras_arq.iterrows():
-            st.write(arq['nome'])
-            c_a1, c_a2 = st.columns(2)
-            if c_a1.button("🔄", key=f"r{arq['id']}"):
-                supabase.table("obras").update({"status": "Ativa"}).eq("id", arq['id']).execute()
-                st.cache_data.clear(); st.rerun()
-            if c_a2.button("🗑️", key=f"d{arq['id']}"):
-                supabase.table("obras").delete().eq("id", arq['id']).execute()
-                st.cache_data.clear(); st.rerun()
+        st.markdown("---")
+        if st.button("🗑️ Excluir Obra Atual", type="primary"):
+            # Exclusão definitiva direta
+            supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("tarefas").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("obras").delete().eq("id", id_obra_atual).execute()
+            st.error("Obra excluída permanentemente!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
 if id_obra_atual == 0:
-    st.info("👈 Selecione ou crie uma obra.")
+    st.info("👈 Selecione ou crie uma obra no menu lateral.")
     st.stop()
 
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual] if not DB['custos'].empty else pd.DataFrame()
-crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual] if not DB['cronograma'].empty else pd.DataFrame()
-tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual] if not DB['tarefas'].empty else pd.DataFrame()
 
 # --- ABAS ---
 tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
 
-# 1 a 5 (Mantidos simplificados para foco na correção)
-with tabs[0]:
-    st.subheader(f"Lançar Custo - {nome_obra_atual}")
-    with st.form("l_f", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3); d = c1.text_input("Descrição"); v = c2.number_input("Valor"); q = c3.number_input("Qtd", 1.0)
-        e = st.selectbox("Etapa", [et for et, _ in TEMPLATE_ETAPAS] + ["Mão de Obra"])
-        if st.form_submit_button("Salvar"):
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": d, "valor": v, "qtd": q, "total": v*q, "etapa": e, "data": str(datetime.now().date())}).execute()
-            st.cache_data.clear(); st.rerun()
-
-with tabs[1]:
-    if not crono_f.empty:
-        for _, r in crono_f.iterrows():
-            st.write(r['etapa']); st.slider("%", 0, 100, int(r['porcentagem']), key=f"sl{r['id']}")
-
-with tabs[2]:
-    if "t_res" not in st.session_state: st.session_state.t_res = 0
-    with st.form("t_f", clear_on_submit=True):
-        t_d = st.text_input("Tarefa", key=f"td{st.session_state.t_res}")
-        if st.form_submit_button("Add"):
-            supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": t_d, "status": "Pendente"}).execute()
-            st.session_state.t_res += 1; st.cache_data.clear(); st.rerun()
-    if not tarefas_f.empty: st.data_editor(tarefas_f[['descricao', 'status']], use_container_width=True)
-
-with tabs[3]:
-    if not custos_f.empty: st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True)
-
-with tabs[4]:
-    if not custos_f.empty: st.metric("Gasto Total", formatar_moeda(custos_f['total'].sum())); st.bar_chart(custos_f.groupby('etapa')['total'].sum())
-
-# 6. PAGAMENTOS (ESTRUTURA COMPLETA MANTIDA)
+# Aba 6: PAGAMENTOS (ESTRUTURA COMPLETA MANTIDA)
 with tabs[5]:
     st.subheader(f"💰 Gestão Financeira - {nome_obra_atual}")
     
     col_orc1, col_orc2 = st.columns(2)
     with col_orc1:
-        novo_orc_p = st.number_input("Orçamento Total Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
+        novo_orc_p = st.number_input("Orçamento Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
     with col_orc2:
-        novo_orc_c = st.number_input("Orçamento Total Cliente (R$)", min_value=0.0, value=orc_cliente_atual, step=100.0)
+        novo_orc_c = st.number_input("Orçamento Cliente (R$)", min_value=0.0, value=orc_cliente_atual, step=100.0)
         
     if st.button("💾 Salvar Orçamentos"):
         supabase.table("obras").update({"orcamento_pedreiro": novo_orc_p, "orcamento_cliente": novo_orc_c}).eq("id", id_obra_atual).execute()
