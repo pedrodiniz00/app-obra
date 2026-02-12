@@ -33,6 +33,9 @@ TEMPLATE_ETAPAS = [
 ]
 
 # --- FUNÇÕES AUXILIARES ---
+def formatar_moeda(valor):
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 def extrair_numero_etapa(texto):
     try:
         match = re.match(r"(\d+)", str(texto))
@@ -56,6 +59,8 @@ def carregar_tudo():
             if 'subetapa' not in df.columns: df['subetapa'] = ""
             if 'classe' not in df.columns: df['classe'] = "Material"
             if df.empty: df = pd.DataFrame(columns=['id', 'id_obra', 'classe', 'subetapa', 'valor', 'total', 'qtd', 'descricao', 'data', 'etapa'])
+            else:
+                df['data'] = pd.to_datetime(df['data']).dt.date
         if tbl == 'obras':
             if 'status' not in df.columns: df['status'] = 'Ativa'
             if 'orcamento_pedreiro' not in df.columns: df['orcamento_pedreiro'] = 0.0
@@ -82,6 +87,10 @@ if not st.session_state["password_correct"]:
 # --- INTERFACE ---
 DB = carregar_tudo()
 
+# Lógica para manter a aba ativa
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "📝 Lançar"
+
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -104,18 +113,6 @@ with st.sidebar:
                 orc_pedreiro_atual = float(obra_row.get('orcamento_pedreiro', 0.0))
         except: id_obra_atual = 0
 
-    BLOQUEADO = status_obra in ["Concluída", "Paralisada"]
-
-    with st.expander("➕ Nova Obra"):
-        with st.form("new_obra", clear_on_submit=True):
-            n_nome = st.text_input("Nome da Obra")
-            if st.form_submit_button("Criar Obra"):
-                res = supabase.table("obras").insert({"nome": n_nome, "status": "Ativa", "orcamento_pedreiro": 0}).execute()
-                new_id = res.data[0]['id']
-                lista_crono = [{"id_obra": new_id, "etapa": str(e), "status": "Pendente", "orcamento": float(o), "porcentagem": 0} for e, o, _ in TEMPLATE_ETAPAS]
-                supabase.table("cronograma").insert(lista_crono).execute()
-                st.success("Criada!"); st.cache_data.clear(); time.sleep(1); st.rerun()
-
     if id_obra_atual > 0:
         if st.button("🗑️ Excluir Obra Atual", type="primary"):
             supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
@@ -133,15 +130,23 @@ crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual] if not 
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual] if not DB['tarefas'].empty else pd.DataFrame()
 
 # --- ABAS ---
-t1, t2, t3, t4, t5, t6, t7 = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📦 Cadastros", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
+lista_abas = ["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📦 Cadastros", "📊 Histórico", "📈 Dash", "💰 Pagamentos"]
+# Encontrar índice da aba ativa para o Streamlit não resetar
+try:
+    idx_aba = lista_abas.index(st.session_state.active_tab)
+except:
+    idx_aba = 0
+
+tabs = st.tabs(lista_abas)
 
 # 1. LANÇAR
-with t1:
+with tabs[0]:
+    st.session_state.active_tab = "📝 Lançar"
     st.subheader(f"Lançar Custo - {nome_obra_atual}")
     with st.form("lancar_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         desc = c1.text_input("Descrição do Item")
-        valor = c2.number_input("Valor Unitário", 0.0)
+        valor = c2.number_input("Valor Unitário (R$)", 0.0)
         qtd = c3.number_input("Qtd", 1.0)
         etapa = st.selectbox("Etapa", [e for e, _, _ in TEMPLATE_ETAPAS] + ["Mão de Obra"])
         if st.form_submit_button("Salvar Gasto"):
@@ -149,7 +154,8 @@ with t1:
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
 # 2. CRONOGRAMA
-with t2:
+with tabs[1]:
+    st.session_state.active_tab = "📅 Cronograma"
     if not crono_f.empty:
         for _, row in crono_f.iterrows():
             st.write(f"**{row['etapa']}**")
@@ -159,7 +165,8 @@ with t2:
                 st.cache_data.clear(); st.rerun()
 
 # 3. TAREFAS
-with t3:
+with tabs[2]:
+    st.session_state.active_tab = "✅ Tarefas"
     st.subheader("📋 Gerenciar Tarefas")
     if "tarefa_reset" not in st.session_state: st.session_state.tarefa_reset = 0
     with st.form("form_tarefa", clear_on_submit=True):
@@ -173,7 +180,6 @@ with t3:
                 st.cache_data.clear(); st.rerun()
     st.markdown("---")
     if not tarefas_f.empty:
-        st.write("📝 **Editar Tarefas**")
         df_ed = st.data_editor(
             tarefas_f[['id', 'descricao', 'responsavel', 'status']],
             key="ed_tarefas", hide_index=True, use_container_width=True,
@@ -185,59 +191,76 @@ with t3:
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
 # 4. CADASTROS
-with t4:
+with tabs[3]:
+    st.session_state.active_tab = "📦 Cadastros"
     st.write("Módulo de cadastros básicos.")
 
 # 5. HISTORICO
-with t5:
+with tabs[4]:
+    st.session_state.active_tab = "📊 Histórico"
     if not custos_f.empty:
-        st.dataframe(custos_f[['data', 'descricao', 'qtd', 'valor', 'total', 'etapa']], use_container_width=True)
+        st.dataframe(
+            custos_f[['data', 'descricao', 'qtd', 'valor', 'total', 'etapa']],
+            use_container_width=True,
+            column_config={
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "valor": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
+                "total": st.column_config.NumberColumn("Total", format="R$ %.2f")
+            }
+        )
 
 # 6. DASHBOARDS
-with t6:
+with tabs[5]:
+    st.session_state.active_tab = "📈 Dash"
     if not custos_f.empty:
-        st.metric("Total Gasto Geral", f"R$ {custos_f['total'].sum():,.2f}")
+        st.metric("Total Gasto Geral", formatar_moeda(custos_f['total'].sum()))
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 7. PAGAMENTOS (NOVA)
-with t7:
+# 7. PAGAMENTOS (MANTER ABA)
+with tabs[6]:
+    st.session_state.active_tab = "💰 Pagamentos"
     st.subheader(f"💰 Pagamentos de Mão de Obra - {nome_obra_atual}")
     
-    # Campo para definir o orçamento do pedreiro
-    novo_orc = st.number_input("Definir Orçamento Total do Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
+    novo_orc = st.number_input("Orçamento Total Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
     if novo_orc != orc_pedreiro_atual:
-        if st.button("💾 Atualizar Orçamento"):
+        if st.button("💾 Salvar Orçamento"):
             supabase.table("obras").update({"orcamento_pedreiro": novo_orc}).eq("id", id_obra_atual).execute()
-            st.success("Orçamento atualizado!"); st.cache_data.clear(); st.rerun()
+            st.success("Salvo!"); st.cache_data.clear(); st.rerun()
     
     st.markdown("---")
     
-    # Lançar novo pagamento
     with st.form("form_pagto", clear_on_submit=True):
-        st.write("➕ **Registrar Parcela Paga**")
+        st.write("➕ **Lançar Pagamento Realizado**")
         c_p1, c_p2 = st.columns(2)
-        dt_pago = c_p1.date_input("Data", datetime.now())
-        v_pago = c_p2.number_input("Valor Pago", min_value=0.0)
+        dt_pago = c_p1.date_input("Data do Pagamento", datetime.now())
+        v_pago = c_p2.number_input("Valor Pago (R$)", min_value=0.0)
         if st.form_submit_button("Confirmar Pagamento"):
             if v_pago > 0:
                 supabase.table("custos").insert({
-                    "id_obra": id_obra_atual, "descricao": "Pagamento Pedreiro",
+                    "id_obra": id_obra_atual, "descricao": "Pagamento Mão de Obra",
                     "valor": v_pago, "qtd": 1, "total": v_pago,
                     "etapa": "Mão de Obra", "data": str(dt_pago)
                 }).execute()
-                st.success("Pago!"); st.cache_data.clear(); st.rerun()
+                st.success("Pagamento registrado!"); st.cache_data.clear(); st.rerun()
 
-    # Cálculos de Saldo
     pagos_mo = custos_f[custos_f['etapa'] == "Mão de Obra"] if not custos_f.empty else pd.DataFrame()
     total_pago_mo = pagos_mo['total'].sum() if not pagos_mo.empty else 0.0
     saldo_pedreiro = novo_orc - total_pago_mo
 
     st.markdown("---")
     res1, res2, res3 = st.columns(3)
-    res1.metric("Orçamento Total", f"R$ {novo_orc:,.2f}")
-    res2.metric("Total Pago", f"R$ {total_pago_mo:,.2f}")
-    res3.metric("Saldo a Pagar", f"R$ {saldo_pedreiro:,.2f}", delta_color="inverse")
+    res1.metric("Orçamento Total", formatar_moeda(novo_orc))
+    res2.metric("Total Pago", formatar_moeda(total_pago_mo))
+    res3.metric("Saldo a Pagar", formatar_moeda(saldo_pedreiro), delta_color="inverse")
 
     if not pagos_mo.empty:
         st.write("📅 **Histórico de Pagamentos**")
-        st.dataframe(pagos_mo[['data', 'total']].rename(columns={'total': 'Valor (R$)'}), hide_index=True, use_container_width=True)
+        st.dataframe(
+            pagos_mo[['data', 'total']].sort_values('data', ascending=False),
+            hide_index=True, 
+            use_container_width=True,
+            column_config={
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "total": st.column_config.NumberColumn("Valor Pago", format="R$ %.2f")
+            }
+        )
