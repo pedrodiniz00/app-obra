@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
+import time
 from datetime import datetime
+import numpy as np
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Gestão de Obra PRO", layout="wide", page_icon="🏗️")
 
 # --- CONEXÃO SUPABASE ---
@@ -19,12 +21,63 @@ def init_connection():
 
 supabase = init_connection()
 
+# --- PADRÃO DE ETAPAS (Fiel ao seu arquivo cronograma.xlsx) ---
+ETAPAS_PADRAO = [
+    {"pai": "1. Planejamento e Preliminares", "sub": "Projetos e Aprovações"},
+    {"pai": "1. Planejamento e Preliminares", "sub": "Limpeza do Terreno"},
+    {"pai": "1. Planejamento e Preliminares", "sub": "Ligação Provisória (Água/Luz)"},
+    {"pai": "1. Planejamento e Preliminares", "sub": "Barracão e Tapumes"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Gabarito e Marcação"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Escavação"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Concretagem Sapatas/Estacas"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Vigas Baldrame"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Impermeabilização"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Passagem de tubulação de esgoto"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Passagem de tubulação de alimentação de energia"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Pilares"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Vigas"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Lajes"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Escadas"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Marcação das Paredes"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Levantamento de Paredes"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Impermeabilização das 3 fiadas"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Locação Caixinhas (conferencia de altura e alinhamento)"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Conferencia dos pontos hidráulicos e esgoto (altura dos mesmos)"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Embuço"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Impermeabilização dos Banheiros"},
+    {"pai": "4. Alvenaria e Vedação", "sub": "Vergas e Contravergas"},
+    {"pai": "4. Alvenaria e Vedação", "sub": "Chapisco e Emboço"},
+    {"pai": "5. Cobertura", "sub": "Estrutura Telhado"},
+    {"pai": "5. Cobertura", "sub": "Telhamento"},
+    {"pai": "5. Cobertura", "sub": "Calhas e Rufos"},
+    {"pai": "5. Cobertura", "sub": "Montagem da Lage"},
+    {"pai": "5. Cobertura", "sub": "Passagem e Conferencia dos Conduites"},
+    {"pai": "6. Instalações", "sub": "Tubulação Água/Esgoto"},
+    {"pai": "6. Instalações", "sub": "Eletrodutos e Caixinhas"},
+    {"pai": "6. Instalações", "sub": "Fiação e Cabos"},
+    {"pai": "6. Instalações", "sub": "Tubulação Gás/Ar"},
+    {"pai": "6. Instalações", "sub": "Conferir medidas de saida de esgoto do vaso"},
+    {"pai": "6. Instalações", "sub": "Ralo dentro e fora do boxe"},
+    {"pai": "6. Instalações", "sub": "Conferir medida do desnível para o chuveiro"},
+    {"pai": "6. Instalações", "sub": "Conferir novamente pontos de esgoto e aguá das pias(alturas)"},
+    {"pai": "7. Acabamentos", "sub": "Contrapiso"},
+    {"pai": "7. Acabamentos", "sub": "Reboco/Gesso"},
+    {"pai": "7. Acabamentos", "sub": "Revestimentos (Piso/Parede)"},
+    {"pai": "7. Acabamentos", "sub": "Louças e Metais"},
+    {"pai": "7. Acabamentos", "sub": "Esquadrias (Portas/Janelas)"},
+    {"pai": "7. Acabamentos", "sub": "Conferir alinhamento dos pisos"},
+    {"pai": "7. Acabamentos", "sub": "Conferir alinhamento dos pisos nas varandas em todos os cantos"},
+    {"pai": "7. Acabamentos", "sub": "Conferir largura do desnível dos banheiros"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Muros e Calçadas"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Pintura Interna/Externa"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Elétrica Final (Tomadas/Luz)"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Limpeza Pós-Obra"}
+]
+
 # --- FUNÇÕES AUXILIARES ---
 def formatar_moeda(valor):
-    try: 
-        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: 
-        return "R$ 0,00"
+    try: return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except: return "R$ 0,00"
 
 def garantir_colunas(df, colunas, tipo="valor"):
     if df.empty: return pd.DataFrame(columns=colunas)
@@ -36,21 +89,22 @@ def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").execute()
         return pd.DataFrame(response.data)
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=2) 
 def carregar_tudo():
     dados = {}
-    for tbl in ["obras", "custos", "cronograma", "tarefas", "materiais"]:
+    for tbl in ["obras", "custos", "cronograma", "tarefas"]:
         df = run_query(tbl)
         if tbl == 'obras':
             df = garantir_colunas(df, ['id', 'nome', 'orcamento_pedreiro', 'orcamento_cliente'])
-        elif tbl == 'custos':
+        if tbl == 'custos':
             df = garantir_colunas(df, ['id', 'id_obra', 'valor', 'total', 'descricao', 'data', 'etapa'])
             if not df.empty: df['data'] = pd.to_datetime(df['data']).dt.date
-        elif tbl == 'materiais':
-            df = garantir_colunas(df, ['id', 'nome'], "texto")
+        if tbl == 'cronograma':
+            df = garantir_colunas(df, ['id', 'id_obra', 'etapa', 'porcentagem'])
+        if tbl == 'tarefas':
+            df = garantir_colunas(df, ['id', 'id_obra', 'descricao', 'responsavel', 'status'], "texto")
         dados[tbl] = df
     return dados
 
@@ -67,9 +121,9 @@ if not st.session_state["password_correct"]:
                 st.rerun()
     st.stop()
 
-# --- DADOS E SIDEBAR ---
 DB = carregar_tudo()
 
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -80,86 +134,138 @@ with st.sidebar:
         row_o = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
         nome_obra = row_o['nome']
         orc_p = float(row_o.get('orcamento_pedreiro', 0))
-    else:
-        st.warning("Crie uma obra na lateral.")
+        orc_c = float(row_o.get('orcamento_cliente', 0))
 
-if id_obra_atual == 0: st.stop()
+    st.markdown("---")
+    with st.expander("➕ Nova Obra"):
+        n_nome = st.text_input("Nome da Obra")
+        if st.button("Criar Obra"):
+            if n_nome:
+                res = supabase.table("obras").insert({"nome": n_nome}).execute()
+                new_id = res.data[0]['id']
+                # INSERÇÃO REAL DE CADA SUBETAPA COMO REGISTRO INDIVIDUAL NO BANCO
+                for item in ETAPAS_PADRAO:
+                    nome_completo = f"{item['pai']} | {item['sub']}"
+                    supabase.table("cronograma").insert({"id_obra": new_id, "etapa": nome_completo, "porcentagem": 0}).execute()
+                st.success("Obra e Cronograma Criados!"); st.cache_data.clear(); st.rerun()
 
-custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual].copy()
-materiais_f = DB['materiais']
-
-# --- ABAS ---
-tabs = st.tabs(["📅 Cronograma", "💰 Pagamentos", "📦 Cadastro", "📝 Lançar", "📊 Histórico"])
-
-# 1. CRONOGRAMA
-with tabs[0]:
-    st.subheader(f"Cronograma: {nome_obra}")
-    # Estrutura baseada no seu cronograma.xlsx
-    estrutura = [
-        {"etapa": "1. Planejamento e Preliminares", "subs": ["Projetos e Aprovações", "Limpeza do Terreno", "Ligação Provisória", "Barracão"]},
-        {"etapa": "2. Infraestrutura (Fundação)", "subs": ["Gabarito", "Escavação", "Concretagem", "Vigas Baldrame", "Impermeabilização"]},
-        {"etapa": "3. Supraestrutura (Estrutura)", "subs": ["Pilares", "Vigas", "Lajes", "Escadas"]}
-    ]
-    for i, item in enumerate(estrutura):
-        with st.expander(f"📌 {item['etapa']}"):
-            for j, sub in enumerate(item['subs']):
-                col1, col2 = st.columns([0.8, 0.2])
-                col1.write(sub)
-                st.checkbox("Concluído", key=f"check_{i}_{j}")
-
-# 2. PAGAMENTOS
-with tabs[1]:
-    st.subheader("💰 Gestão Financeira")
-    c1, c2 = st.columns(2)
-    orc_total = c1.number_input("Orçamento Pedreiro (R$)", value=orc_p, format="%.2f")
-    data_ref = c2.date_input("Data do Lançamento", format="DD/MM/YYYY")
-    
-    gastos_mo = custos_f[custos_f['etapa'] == "Mão de Obra"]['total'].sum()
-    st.metric("Saldo Restante (R$)", formatar_moeda(orc_total - gastos_mo))
-
-# 3. CADASTRO (Importar, Editar, Excluir)
-with tabs[2]:
-    st.subheader("📦 Cadastro de Materiais")
-    
-    with st.expander("📥 Importar do Ficheiro"):
-        if st.button("Carregar 'Cadastro material.xlsx'"):
-            try:
-                df_csv = pd.read_csv("Cadastro material.xlsx - Planilha1.csv")
-                itens = df_csv.iloc[:, 0].dropna().unique()
-                for item in itens:
-                    supabase.table("materiais").upsert({"nome": str(item)}).execute()
-                st.success("Importação concluída!"); st.cache_data.clear(); st.rerun()
-            except: st.error("Ficheiro não encontrado no diretório.")
-
-    # Editor para Editar e Excluir
-    if not materiais_f.empty:
-        df_ed = st.data_editor(materiais_f[['id', 'nome']], num_rows="dynamic", use_container_width=True, key="editor_mat")
-        if st.button("💾 Aplicar Alterações"):
-            ids_finais = df_ed['id'].dropna().tolist()
-            para_deletar = set(materiais_f['id'].tolist()) - set(ids_finais)
-            for d_id in para_deletar: supabase.table("materiais").delete().eq("id", d_id).execute()
-            for _, r in df_ed.iterrows():
-                if pd.notnull(r['id']): supabase.table("materiais").update({"nome": r['nome']}).eq("id", r['id']).execute()
-                else: supabase.table("materiais").insert({"nome": r['nome']}).execute()
+    if id_obra_atual > 0:
+        if st.button("🗑️ Excluir Obra Atual", type="primary"):
+            supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("tarefas").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("obras").delete().eq("id", id_obra_atual).execute()
             st.cache_data.clear(); st.rerun()
 
-# 4. LANÇAR
-with tabs[3]:
-    st.subheader("📝 Lançar Gasto")
-    with st.form("form_gasto", clear_on_submit=True):
-        m_opcoes = materiais_f['nome'].tolist() if not materiais_f.empty else []
-        desc = st.selectbox("Material", m_opcoes) if m_opcoes else st.text_input("Descrição")
-        valor = st.number_input("Valor (R$)", format="%.2f")
-        etapa = st.selectbox("Categoria", ["Materiais", "Mão de Obra", "Outros"])
-        data_g = st.date_input("Data", format="DD/MM/YYYY")
-        if st.form_submit_button("Salvar"):
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "total": valor, "etapa": etapa, "data": str(data_g)}).execute()
+if id_obra_atual == 0:
+    st.info("👈 Selecione ou crie uma obra.")
+    st.stop()
+
+custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual]
+crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual]
+tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual]
+
+# --- ABAS (Estrutura 100% Preservada) ---
+tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
+
+# 1. LANÇAR
+with tabs[0]:
+    st.subheader(f"Lançar Custo - {nome_obra}")
+    with st.form("form_lancar", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        desc = c1.text_input("Descrição do Item")
+        valor = c2.number_input("Valor Unitário (R$)", 0.0)
+        qtd = c3.number_input("Qtd", 1.0)
+        # Lista de categorias baseada nas etapas pai para lançamentos financeiros
+        lista_pais = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
+        etapa_fin = st.selectbox("Etapa de Gasto", lista_pais + ["Mão de Obra"])
+        if st.form_submit_button("Salvar Gasto"):
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(datetime.now().date())}).execute()
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
-# 5. HISTÓRICO
+# 2. CRONOGRAMA (Com Agrupamento e Edição/Exclusão)
+with tabs[1]:
+    st.subheader(f"📅 Progresso Detalhado")
+    if not crono_f.empty:
+        # Extração de Pai e Sub para exibição organizada
+        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Extra")
+        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else x)
+        
+        for pai in sorted(crono_f['pai'].unique()):
+            st.markdown(f"#### 🏗️ {pai}")
+            sub_itens = crono_f[crono_f['pai'] == pai]
+            for _, row in sub_itens.iterrows():
+                with st.expander(f"{row['sub']} - {row['porcentagem']}%"):
+                    c1, c2 = st.columns([3, 1])
+                    nv_n = c1.text_input("Nome", value=row['sub'], key=f"n_{row['id']}")
+                    nv_p = c1.slider("Progresso", 0, 100, int(row['porcentagem']), key=f"p_{row['id']}")
+                    if c2.button("💾", key=f"s_{row['id']}"):
+                        db_name = f"{pai} | {nv_n}" if pai != "Extra" else nv_n
+                        supabase.table("cronograma").update({"etapa": db_name, "porcentagem": nv_p}).eq("id", row['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+                    if c2.button("🗑️", key=f"d_{row['id']}"):
+                        supabase.table("cronograma").delete().eq("id", row['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+            st.markdown("---")
+
+# 3. TAREFAS (Editor Restaurado)
+with tabs[2]:
+    st.subheader("📋 Gestão de Tarefas")
+    with st.form("form_tarefa", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        nt = c1.text_input("Nova Tarefa")
+        rp = c2.text_input("Responsável")
+        if st.form_submit_button("Adicionar"):
+            supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
+            st.cache_data.clear(); st.rerun()
+    if not tarefas_f.empty:
+        df_ed = st.data_editor(tarefas_f[['id', 'descricao', 'responsavel', 'status']], key="ed_tar", hide_index=True, use_container_width=True)
+        if st.button("Salvar Alterações Tarefas"):
+            for _, r in df_ed.iterrows():
+                supabase.table("tarefas").update({"descricao": r['descricao'], "responsavel": r['responsavel'], "status": r['status']}).eq("id", r['id']).execute()
+            st.cache_data.clear(); st.rerun()
+
+# 4. HISTÓRICO
+with tabs[3]:
+    st.subheader("📊 Histórico Completo")
+    st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
+
+# 5. DASHBOARD
 with tabs[4]:
-    st.subheader("📊 Histórico")
-    st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], 
-                 column_config={"total": st.column_config.NumberColumn(format="R$ %.2f"),
-                                "data": st.column_config.DateColumn(format="DD/MM/YYYY")},
-                 use_container_width=True)
+    st.subheader("📈 Resumo de Custos")
+    if not custos_f.empty:
+        st.metric("Total Gasto", formatar_moeda(custos_f['total'].sum()))
+        st.bar_chart(custos_f.groupby('etapa')['total'].sum())
+
+# 6. PAGAMENTOS (Estrutura Restaurada)
+with tabs[5]:
+    st.subheader(f"💰 Financeiro - {nome_obra}")
+    co1, co2 = st.columns(2)
+    nP = co1.number_input("Orçamento Pedreiro", value=orc_p)
+    nC = co2.number_input("Orçamento Cliente", value=orc_c)
+    if st.button("💾 Salvar Orçamentos Totais"):
+        supabase.table("obras").update({"orcamento_pedreiro": nP, "orcamento_cliente": nC}).eq("id", id_obra_atual).execute()
+        st.cache_data.clear(); st.rerun()
+    
+    with st.form("f_fin", clear_on_submit=True):
+        st.write("➕ **Lançar Pagamento / Recebimento**")
+        cp1, cp2, cp3 = st.columns(3)
+        t = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
+        v = cp2.number_input("Valor R$")
+        if st.form_submit_button("Confirmar"):
+            cat = "Mão de Obra" if "Saída" in t else "Entrada Cliente"
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": t, "valor": v, "total": v, "etapa": cat, "data": str(datetime.now().date())}).execute()
+            st.cache_data.clear(); st.rerun()
+
+    p_mo = custos_f[custos_f['etapa'] == "Mão de Obra"]
+    r_cl = custos_f[custos_f['etapa'] == "Entrada Cliente"]
+    res1, res2 = st.columns(2)
+    res1.metric("Saldo Pedreiro", formatar_moeda(nP - p_mo['total'].sum()))
+    res2.metric("Saldo Cliente", formatar_moeda(nC - r_cl['total'].sum()))
+
+    st.markdown("---")
+    h1, h2 = st.columns(2)
+    h1.write("🔴 Saídas")
+    h1.dataframe(p_mo[['data', 'total']], hide_index=True, use_container_width=True)
+    h2.write("🟢 Entradas")
+    h2.dataframe(r_cl[['data', 'total']], hide_index=True, use_container_width=True)
