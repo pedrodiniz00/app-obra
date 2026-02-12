@@ -184,29 +184,43 @@ with tabs[0]:
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
 # 2. CRONOGRAMA (Com Agrupamento e Edição/Exclusão)
-with tabs[1]:
-    st.subheader(f"📅 Progresso Detalhado")
-    if not crono_f.empty:
-        # Extração de Pai e Sub para exibição organizada
-        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Extra")
-        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else x)
-        
-        for pai in sorted(crono_f['pai'].unique()):
-            st.markdown(f"#### 🏗️ {pai}")
-            sub_itens = crono_f[crono_f['pai'] == pai]
-            for _, row in sub_itens.iterrows():
-                with st.expander(f"{row['sub']} - {row['porcentagem']}%"):
-                    c1, c2 = st.columns([3, 1])
-                    nv_n = c1.text_input("Nome", value=row['sub'], key=f"n_{row['id']}")
-                    nv_p = c1.slider("Progresso", 0, 100, int(row['porcentagem']), key=f"p_{row['id']}")
-                    if c2.button("💾", key=f"s_{row['id']}"):
-                        db_name = f"{pai} | {nv_n}" if pai != "Extra" else nv_n
-                        supabase.table("cronograma").update({"etapa": db_name, "porcentagem": nv_p}).eq("id", row['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-                    if c2.button("🗑️", key=f"d_{row['id']}"):
-                        supabase.table("cronograma").delete().eq("id", row['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-            st.markdown("---")
+import streamlit as st
+
+# Mantenha suas outras funções de abas (Pagamentos, etc.) como estão.
+# Altere apenas o conteúdo da aba Cronograma:
+
+def aba_cronograma():
+    st.title("📅 Cronograma de Obra")
+
+    # Lista de dicionários para preservar a ordem e chaves duplicadas (ex: 3. Supraestrutura)
+    estrutura_cronograma = [
+        {"etapa": "1. Planejamento e Preliminares", "atividades": ["Projetos e Aprovações", "Limpeza do Terreno", "Ligação Provisória (Água/Luz)", "Barracão e Tapumes"]},
+        {"etapa": "2. Infraestrutura (Fundação)", "atividades": ["Gabarito e Marcação", "Escavação", "Concretagem Sapatas/Estacas", "Vigas Baldrame", "Impermeabilização", "Gabarito e Marcação", "Escavação", "Concretagem Sapatas/Estacas", "Vigas Baldrame", "Impermeabilização", "Passagem de tubulação de esgoto", "Passagem de tubulação de alimentação de energia"]},
+        {"etapa": "3. Supraestrutura (Estrutura)", "atividades": ["Pilares", "Vigas", "Lajes", "Escadas"]},
+        {"etapa": "3. Supraestrutura e Alvenaria", "atividades": ["Marcação das Paredes", "Impermeabilização das 3 fiadas", "Embuço", "Impermeabilização dos Banheiros", "Locação Caixinhas (conferência de altura e alinhamento)", "Conferência dos pontos hidráulicos e esgoto (altura dos mesmos)", "Pilares", "Vigas"]},
+        {"etapa": "4. Alvenaria e Vedação", "atividades": ["Levantamento de Paredes", "Vergas e Contravergas", "Chapisco e Emboço"]},
+        {"etapa": "5. Cobertura", "atividades": ["Estrutura Telhado", "Telhamento", "Calhas e Rufos"]},
+        {"etapa": "6. Instalações", "atividades": ["Tubulação Água/Esgoto", "Eletrodutos e Caixinhas", "Fiação e Cabos", "Tubulação Gás/Ar", "Conferir medidas de saída de esgoto do vaso", "Ralo dentro e fora do boxe", "Conferir medida do desnível para o chuveiro", "Conferir novamente pontos de esgoto e água das pias (alturas)"]},
+        {"etapa": "7. Acabamentos", "atividades": ["Contrapiso", "Reboco/Gesso", "Revestimentos (Piso/Parede)", "Louças e Metais", "Esquadrias (Portas/Janelas)", "Conferir alinhamento dos pisos", "Conferir alinhamento dos pisos nas varandas em todos os cantos", "Conferir largura do desnível dos banheiros"]},
+        {"etapa": "8. Área Externa e Finalização", "atividades": ["Muros e Calçadas", "Pintura Interna/Externa", "Elétrica Final (Tomadas/Luz)", "Limpeza Pós-Obra"]}
+    ]
+
+    # Renderização da Interface
+    for i, item in enumerate(estrutura_cronograma):
+        # Cada etapa vira um cabeçalho expansível
+        with st.expander(f"🏗️ {item['etapa']}", expanded=False):
+            for j, atividade in enumerate(item['atividades']):
+                col1, col2 = st.columns([0.8, 0.2])
+                with col1:
+                    st.write(f"{atividade}")
+                with col2:
+                    # Chave única baseada nos índices i e j para evitar conflitos de nomes iguais
+                    st.checkbox("OK", key=f"cron_{i}_{j}")
+
+# No seu seletor de abas principal:
+# tabs = st.tabs(["Cronograma", "Pagamentos", "Outra Aba"])
+# with tabs[0]:
+#     aba_cronograma()
 
 # 3. TAREFAS (Editor Restaurado)
 with tabs[2]:
