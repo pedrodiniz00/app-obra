@@ -21,7 +21,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- PADRÃO DE ETAPAS (Baseado no seu cronograma.xlsx) ---
+# --- PADRÃO DE ETAPAS (Extraído do seu cronograma.xlsx - Removido duplicatas) ---
 ETAPAS_PADRAO = [
     {"pai": "1. Planejamento e Preliminares", "sub": "Projetos e Aprovações"},
     {"pai": "1. Planejamento e Preliminares", "sub": "Limpeza do Terreno"},
@@ -33,17 +33,45 @@ ETAPAS_PADRAO = [
     {"pai": "2. Infraestrutura (Fundação)", "sub": "Vigas Baldrame"},
     {"pai": "2. Infraestrutura (Fundação)", "sub": "Impermeabilização"},
     {"pai": "2. Infraestrutura (Fundação)", "sub": "Passagem de tubulação de esgoto"},
-    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Pilares/Vigas/Lajes"},
-    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Levantamento de Paredes"},
+    {"pai": "2. Infraestrutura (Fundação)", "sub": "Passagem de tubulação de alimentação de energia"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Pilares"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Vigas"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Lajes"},
+    {"pai": "3. Supraestrutura (Estrutura)", "sub": "Escadas"},
     {"pai": "3. Supraestrutura e Alvenaria", "sub": "Marcação das Paredes"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Levantamento de Paredes"},
     {"pai": "3. Supraestrutura e Alvenaria", "sub": "Impermeabilização das 3 fiadas"},
-    {"pai": "4. Cobertura", "sub": "Estrutura Telhado e Telhamento"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Locação Caixinhas (conferencia de altura e alinhamento)"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Conferencia dos pontos hidráulicos e esgoto (altura dos mesmos)"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Embuço"},
+    {"pai": "3. Supraestrutura e Alvenaria", "sub": "Impermeabilização dos Banheiros"},
+    {"pai": "4. Alvenaria e Vedação", "sub": "Vergas e Contravergas"},
+    {"pai": "4. Alvenaria e Vedação", "sub": "Chapisco e Emboço"},
+    {"pai": "4. Cobertura", "sub": "Estrutura Telhado"},
+    {"pai": "4. Cobertura", "sub": "Telhamento"},
+    {"pai": "4. Cobertura", "sub": "Calhas e Rufos"},
     {"pai": "4. Cobertura", "sub": "Montagem da Lage"},
+    {"pai": "4. Cobertura", "sub": "Passagem e Conferencia dos Conduites"},
     {"pai": "5. Instalações", "sub": "Tubulação Água/Esgoto"},
     {"pai": "5. Instalações", "sub": "Eletrodutos e Caixinhas"},
-    {"pai": "6. Acabamentos", "sub": "Reboco/Gesso"},
-    {"pai": "6. Acabamentos", "sub": "Revestimentos (Piso/Parede)"},
-    {"pai": "6. Acabamentos", "sub": "Pintura Interna/Externa"}
+    {"pai": "5. Instalações", "sub": "Fiação e Cabos"},
+    {"pai": "5. Instalações", "sub": "Tubulação Gás/Ar"},
+    {"pai": "5. Instalações", "sub": "Conferir medidas de saida de esgoto do vaso"},
+    {"pai": "5. Instalações", "sub": "Ralo dentro e fora do boxe"},
+    {"pai": "5. Instalações", "sub": "Conferir medida do desnível para o chuveiro"},
+    {"pai": "5. Instalações", "sub": "Conferir novamente pontos de esgoto e aguá das pias(alturas)"},
+    {"pai": "7. Acabamentos", "sub": "Contrapiso"},
+    {"pai": "7. Acabamentos", "sub": "Reboco/Gesso"},
+    {"pai": "7. Acabamentos", "sub": "Revestimentos (Piso/Parede)"},
+    {"pai": "7. Acabamentos", "sub": "Louças e Metais"},
+    {"pai": "7. Acabamentos", "sub": "Esquadrias (Portas/Janelas)"},
+    {"pai": "7. Acabamentos", "sub": "Conferir alinhamento dos pisos"},
+    {"pai": "7. Acabamentos", "sub": "Conferir alinhamento dos pisos nas varandas em todos os cantos"},
+    {"pai": "7. Acabamentos", "sub": "Conferir largura do desnível dos banheiros"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Muros e Calçadas"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Pintura Interna/Externa"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Elétrica Final (Tomadas/Luz)"},
+    {"pai": "8. Área Externa e Finalização", "sub": "Limpeza Pós-Obra"}
 ]
 
 # --- FUNÇÕES AUXILIARES ---
@@ -93,7 +121,6 @@ if not st.session_state["password_correct"]:
                 st.rerun()
     st.stop()
 
-# --- INTERFACE ---
 DB = carregar_tudo()
 
 with st.sidebar:
@@ -114,8 +141,9 @@ with st.sidebar:
         if st.button("Criar"):
             res = supabase.table("obras").insert({"nome": n_nome}).execute()
             new_id = res.data[0]['id']
+            # Cria cronograma baseado nas etapas e subetapas do Excel
             for item in ETAPAS_PADRAO:
-                nome_completo = f"{item['pai']} - {item['sub']}"
+                nome_completo = f"{item['pai']} | {item['sub']}"
                 supabase.table("cronograma").insert({"id_obra": new_id, "etapa": nome_completo, "porcentagem": 0}).execute()
             st.success("Obra Criada!"); st.cache_data.clear(); st.rerun()
 
@@ -133,7 +161,7 @@ custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual]
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual]
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual]
 
-# --- ABAS (Estrutura Restaurada) ---
+# --- ABAS (Estrutura Mantida) ---
 tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
 
 # 1. LANÇAR
@@ -144,31 +172,47 @@ with tabs[0]:
         desc = c1.text_input("Descrição do Item")
         valor = c2.number_input("Valor Unitário (R$)", 0.0)
         qtd = c3.number_input("Qtd", 1.0)
-        etapa_l = st.selectbox("Etapa", list(set([item['pai'] for item in ETAPAS_PADRAO])) + ["Mão de Obra"])
+        # Lista de etapas para seleção baseada nos pais do Excel
+        lista_pais = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
+        etapa_l = st.selectbox("Etapa", lista_pais + ["Mão de Obra"])
         if st.form_submit_button("Salvar Gasto"):
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_l, "data": str(datetime.now().date())}).execute()
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
-# 2. CRONOGRAMA (Com Edição e Exclusão)
+# 2. CRONOGRAMA (AGRUPADO E EDITÁVEL)
 with tabs[1]:
-    st.subheader(f"📅 Cronograma Detalhado")
-    with st.expander("➕ Adicionar Etapa Manual"):
-        nova_e = st.text_input("Nome da Etapa")
-        if st.button("Adicionar"):
-            supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": nova_e, "porcentagem": 0}).execute()
-            st.cache_data.clear(); st.rerun()
+    st.subheader(f"📅 Cronograma: {nome_obra}")
     
-    for i, row in crono_f.iterrows():
-        with st.expander(f"{row['etapa']} - {row['porcentagem']}%"):
-            c1, c2 = st.columns([3, 1])
-            nv_nome = c1.text_input("Editar Nome", value=row['etapa'], key=f"nm_{row['id']}")
-            nv_prog = c1.slider("Progresso (%)", 0, 100, int(row['porcentagem']), key=f"sl_{row['id']}")
-            if c2.button("💾 Salvar", key=f"sv_{row['id']}"):
-                supabase.table("cronograma").update({"etapa": nv_nome, "porcentagem": nv_prog}).eq("id", row['id']).execute()
-                st.cache_data.clear(); st.rerun()
-            if c2.button("🗑️ Apagar", key=f"del_{row['id']}"):
-                supabase.table("cronograma").delete().eq("id", row['id']).execute()
-                st.cache_data.clear(); st.rerun()
+    if not crono_f.empty:
+        # Agrupamento visual por Etapa Pai (usando o separador '|')
+        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Personalizada")
+        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else x)
+        
+        pais_unicos = sorted(crono_f['pai'].unique())
+        for pai in pais_unicos:
+            st.markdown(f"### 🏗️ {pai}")
+            sub_itens = crono_f[crono_f['pai'] == pai]
+            
+            for i, row in sub_itens.iterrows():
+                with st.expander(f"🔹 {row['sub']} - {row['porcentagem']}%"):
+                    c1, c2 = st.columns([3, 1])
+                    nv_nome_sub = c1.text_input("Editar Subetapa", value=row['sub'], key=f"nm_{row['id']}")
+                    nv_prog = c1.slider("Progresso (%)", 0, 100, int(row['porcentagem']), key=f"sl_{row['id']}")
+                    
+                    if c2.button("💾 Salvar", key=f"sv_{row['id']}"):
+                        nome_db = f"{pai} | {nv_nome_sub}" if pai != "Personalizada" else nv_nome_sub
+                        supabase.table("cronograma").update({"etapa": nome_db, "porcentagem": nv_prog}).eq("id", row['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+                    if c2.button("🗑️ Apagar", key=f"del_{row['id']}"):
+                        supabase.table("cronograma").delete().eq("id", row['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+            st.markdown("---")
+    
+    with st.expander("➕ Adicionar Etapa Personalizada"):
+        nova_etp_manual = st.text_input("Nome da Etapa")
+        if st.button("Adicionar"):
+            supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": nova_etp_manual, "porcentagem": 0}).execute()
+            st.cache_data.clear(); st.rerun()
 
 # 3. TAREFAS
 with tabs[2]:
