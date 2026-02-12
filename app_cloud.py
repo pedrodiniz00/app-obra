@@ -174,7 +174,7 @@ with tabs[4]:
         st.metric("Total Gasto Geral", formatar_moeda(custos_f['total'].sum()))
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. PAGAMENTOS (PAGAMENTOS E RECEBIMENTOS)
+# 6. PAGAMENTOS (PAGAMENTOS E RECEBIMENTOS SEPARADOS)
 with tabs[5]:
     st.session_state.active_tab = "💰 Pagamentos"
     st.subheader(f"💰 Gestão Financeira - {nome_obra_atual}")
@@ -234,17 +234,34 @@ with tabs[5]:
         st.metric("Total Recebido", formatar_moeda(total_recebido))
         st.metric("Saldo a Receber", formatar_moeda(saldo_cliente))
 
-    # --- HISTÓRICO ---
+    # --- HISTÓRICOS SEPARADOS ---
     st.markdown("---")
-    st.write("📅 **Histórico de Movimentações Financeiras**")
-    movimentacoes = custos_f[custos_f['etapa'].isin(["Mão de Obra", "Entrada Cliente"])].copy()
-    if not movimentacoes.empty:
-        st.dataframe(
-            movimentacoes[['data', 'etapa', 'total']].sort_values('data', ascending=False),
-            hide_index=True, use_container_width=True,
-            column_config={
-                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                "etapa": "Tipo/Categoria",
-                "total": st.column_config.NumberColumn("Valor", format="R$ %.2f")
-            }
-        )
+    col_hist1, col_hist2 = st.columns(2)
+    
+    with col_hist1:
+        st.write("🔴 **Histórico de Saídas (Pedreiro)**")
+        if not pagos_mo.empty:
+            st.dataframe(
+                pagos_mo[['data', 'total']].sort_values('data', ascending=False),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                    "total": st.column_config.NumberColumn("Valor Pago", format="R$ %.2f")
+                }
+            )
+        else:
+            st.caption("Nenhum pagamento registrado.")
+
+    with col_hist2:
+        st.write("🟢 **Histórico de Entradas (Cliente)**")
+        if not recebido_cli.empty:
+            st.dataframe(
+                recebido_cli[['data', 'total']].sort_values('data', ascending=False),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                    "total": st.column_config.NumberColumn("Valor Recebido", format="R$ %.2f")
+                }
+            )
+        else:
+            st.caption("Nenhum recebimento registrado.")
