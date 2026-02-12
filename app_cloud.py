@@ -185,14 +185,14 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(data_input)}).execute()
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
-# 2. CRONOGRAMA (ENUMERADO COM EXPANDER E GESTÃO)
+# 2. CRONOGRAMA (MODIFICADO: SEM PASTA EXTRA)
 with tabs[1]:
     st.subheader(f"📅 Cronograma de Execução")
     with st.expander("➕ Adicionar Nova Subetapa"):
         with st.form("nova_sub_form", clear_on_submit=True):
             col_p, col_s = st.columns(2)
             pais_ex = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
-            pai_sel = col_p.selectbox("Etapa Pai", pais_ex + ["Extra"])
+            pai_sel = col_p.selectbox("Etapa Pai", pais_ex)
             sub_txt = col_s.text_input("Descrição da Subetapa")
             if st.form_submit_button("Adicionar"):
                 if sub_txt:
@@ -200,20 +200,26 @@ with tabs[1]:
                     st.cache_data.clear(); st.rerun()
 
     if not crono_f.empty:
-        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Extra")
-        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else x)
+        # Define Pai e Sub. Itens sem "|" viram o próprio Pai
+        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
+        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
+        
         pais = sorted(crono_f['pai'].unique())
         for i, pai in enumerate(pais, 1):
             with st.expander(f"📁 {pai}", expanded=False):
                 subs = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
                 for j, (_, row) in enumerate(subs.iterrows(), 1):
+                    # Se não houver sub (item era "Extra"), exibe apenas a linha de progresso
+                    exibir_nome = row['sub'] if row['sub'] != "" else row['pai']
                     with st.container(border=True):
                         c1, c2, c3, c4, c5 = st.columns([0.5, 3, 3, 1, 1])
                         c1.write(f"**{i}.{j}**")
-                        n_txt = c2.text_input("Nome", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
+                        n_txt = c2.text_input("Nome", exibir_nome, key=f"n_{row['id']}", label_visibility="collapsed")
                         n_prog = c3.slider("Progresso", 0, 100, int(row['porcentagem']), key=f"p_{row['id']}", label_visibility="collapsed")
                         if c4.button("💾", key=f"s_{row['id']}"):
-                            supabase.table("cronograma").update({"etapa": f"{pai} | {n_txt}", "porcentagem": n_prog}).eq("id", row['id']).execute()
+                            # Se era um item sem pai, mantém sem pai na atualização
+                            nome_salvar = f"{pai} | {n_txt}" if row['sub'] != "" else n_txt
+                            supabase.table("cronograma").update({"etapa": nome_salvar, "porcentagem": n_prog}).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         if c5.button("🗑️", key=f"d_{row['id']}"):
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
