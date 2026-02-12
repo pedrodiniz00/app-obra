@@ -53,8 +53,16 @@ def carregar_tudo():
             for col in ['orcamento_pedreiro', 'orcamento_cliente']:
                 if col not in df.columns: df[col] = 0.0
             if df.empty: df = pd.DataFrame(columns=['id', 'nome', 'orcamento_pedreiro', 'orcamento_cliente'])
-        if tbl == 'custos' and not df.empty:
-            df['data'] = pd.to_datetime(df['data']).dt.date
+        
+        if tbl == 'custos':
+            # PROTEÇÃO CONTRA KEYERROR 'TOTAL'
+            if not df.empty:
+                if 'valor' not in df.columns: df['valor'] = 0.0
+                if 'qtd' not in df.columns: df['qtd'] = 1.0
+                if 'total' not in df.columns: df['total'] = df['valor'] * df['qtd']
+                df['data'] = pd.to_datetime(df['data']).dt.date
+            else:
+                df = pd.DataFrame(columns=['id', 'id_obra', 'valor', 'total', 'qtd', 'descricao', 'data', 'etapa'])
         dados[tbl] = df
     return dados
 
@@ -74,7 +82,6 @@ if not st.session_state["password_correct"]:
 # --- INTERFACE ---
 DB = carregar_tudo()
 
-# --- SIDEBAR (SISTEMA DE EXCLUSÃO DIRETA RESTAURADO) ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -103,86 +110,70 @@ with st.sidebar:
             if n_nome:
                 res = supabase.table("obras").insert({"nome": n_nome}).execute()
                 new_id = res.data[0]['id']
-                lista_crono = [{"id_obra": new_id, "etapa": str(e), "porcentagem": 0} for e, _ in TEMPLATE_ETAPAS]
-                supabase.table("cronograma").insert(lista_crono).execute()
                 st.success("Obra Criada!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
     if id_obra_atual > 0:
-        st.markdown("---")
         if st.button("🗑️ Excluir Obra Atual", type="primary"):
-            # Exclusão definitiva direta
             supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
-            supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).execute()
-            supabase.table("tarefas").delete().eq("id_obra", id_obra_atual).execute()
             supabase.table("obras").delete().eq("id", id_obra_atual).execute()
-            st.error("Obra excluída permanentemente!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+            st.error("Excluída!"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
 if id_obra_atual == 0:
-    st.info("👈 Selecione ou crie uma obra no menu lateral.")
     st.stop()
 
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual] if not DB['custos'].empty else pd.DataFrame()
 
 # --- ABAS ---
-tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
+tabs = st.tabs(["📝 Lançar", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
 
-# Aba 6: PAGAMENTOS (ESTRUTURA COMPLETA MANTIDA)
-with tabs[5]:
-    st.subheader(f"💰 Gestão Financeira - {nome_obra_atual}")
+# ABA LANÇAR
+with tabs[0]:
+    st.subheader(f"Lançar Custo - {nome_obra_atual}")
+    with st.form("lancar_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        desc = c1.text_input("Descrição")
+        valor = c2.number_input("Valor Unitário (R$)", 0.0)
+        qtd = c3.number_input("Qtd", 1.0)
+        etapa = st.selectbox("Etapa", [e for e, _ in TEMPLATE_ETAPAS] + ["Mão de Obra"])
+        if st.form_submit_button("Salvar"):
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa, "data": str(datetime.now().date())}).execute()
+            st.success("Salvo!"); st.cache_data.clear(); st.rerun()
+
+# ABA HISTÓRICO
+with tabs[1]:
+    if not custos_f.empty:
+        st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, 
+                     column_config={"data": st.column_config.DateColumn(format="DD/MM/YYYY"), "total": st.column_config.NumberColumn(format="R$ %.2f")})
+
+# ABA PAGAMENTOS
+with tabs[3]:
+    st.subheader(f"💰 Financeiro - {nome_obra_atual}")
+    c_o1, c_o2 = st.columns(2)
+    novo_orc_p = c_o1.number_input("Orçamento Pedreiro", value=orc_pedreiro_atual)
+    novo_orc_c = c_o2.number_input("Orçamento Cliente", value=orc_cliente_atual)
     
-    col_orc1, col_orc2 = st.columns(2)
-    with col_orc1:
-        novo_orc_p = st.number_input("Orçamento Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
-    with col_orc2:
-        novo_orc_c = st.number_input("Orçamento Cliente (R$)", min_value=0.0, value=orc_cliente_atual, step=100.0)
-        
     if st.button("💾 Salvar Orçamentos"):
         supabase.table("obras").update({"orcamento_pedreiro": novo_orc_p, "orcamento_cliente": novo_orc_c}).eq("id", id_obra_atual).execute()
-        st.success("Orçamentos atualizados!"); st.cache_data.clear(); st.rerun()
-    
-    st.markdown("---")
-    
-    with st.form("form_financeiro", clear_on_submit=True):
-        st.write("➕ **Lançar Movimentação**")
-        cp1, cp2, cp3 = st.columns(3)
-        tipo = cp1.selectbox("Tipo", ["Pagamento (Saída)", "Recebimento (Entrada)"])
-        dt_mov = cp2.date_input("Data", datetime.now())
-        v_mov = cp3.number_input("Valor (R$)", min_value=0.0)
-        
-        if st.form_submit_button("Confirmar Lançamento"):
-            if v_mov > 0:
-                etapa_fin = "Mão de Obra" if tipo == "Pagamento (Saída)" else "Entrada Cliente"
-                desc_fin = "Pagamento Pedreiro" if tipo == "Pagamento (Saída)" else "Recebimento Cliente"
-                supabase.table("custos").insert({
-                    "id_obra": id_obra_atual, "descricao": desc_fin,
-                    "valor": v_mov, "qtd": 1, "total": v_mov,
-                    "etapa": etapa_fin, "data": str(dt_mov)
-                }).execute()
-                st.success("Lançamento realizado!"); st.cache_data.clear(); st.rerun()
+        st.cache_data.clear(); st.rerun()
 
     pagos_mo = custos_f[custos_f['etapa'] == "Mão de Obra"] if not custos_f.empty else pd.DataFrame()
     recebido_cli = custos_f[custos_f['etapa'] == "Entrada Cliente"] if not custos_f.empty else pd.DataFrame()
-    
-    st.markdown("### 📊 Resumo")
+
     r1, r2 = st.columns(2)
     with r1:
-        total_p_mo = pagos_mo['total'].sum() if not pagos_mo.empty else 0
         st.info("**Mão de Obra**")
-        st.metric("Total Pago", formatar_moeda(total_p_mo))
-        st.metric("Saldo a Pagar", formatar_moeda(novo_orc_p - total_p_mo), delta_color="inverse")
-    with r2:
-        total_r_cli = recebido_cli['total'].sum() if not recebido_cli.empty else 0
-        st.success("**Cliente**")
-        st.metric("Total Recebido", formatar_moeda(total_r_cli))
-        st.metric("Saldo a Receber", formatar_moeda(novo_orc_c - total_r_cli))
+        p = pagos_mo['total'].sum() if not pagos_mo.empty else 0
+        st.metric("Total Pago", formatar_moeda(p))
+        st.metric("Saldo a Pagar", formatar_moeda(novo_orc_p - p))
+        if not pagos_mo.empty:
+            st.write("🔴 Saídas")
+            st.dataframe(pagos_mo[['data', 'total']], hide_index=True)
 
-    st.markdown("---")
-    ch1, ch2 = st.columns(2)
-    with ch1:
-        st.write("🔴 **Saídas (Pedreiro)**")
-        st.dataframe(pagos_mo[['data', 'total']], hide_index=True, use_container_width=True,
-                     column_config={"data": st.column_config.DateColumn(format="DD/MM/YYYY"), "total": st.column_config.NumberColumn(format="R$ %.2f")})
-    with ch2:
-        st.write("🟢 **Entradas (Cliente)**")
-        st.dataframe(recebido_cli[['data', 'total']], hide_index=True, use_container_width=True,
-                     column_config={"data": st.column_config.DateColumn(format="DD/MM/YYYY"), "total": st.column_config.NumberColumn(format="R$ %.2f")})
+    with r2:
+        st.success("**Cliente**")
+        r = recebido_cli['total'].sum() if not recebido_cli.empty else 0
+        st.metric("Total Recebido", formatar_moeda(r))
+        st.metric("Saldo a Receber", formatar_moeda(novo_orc_c - r))
+        if not recebido_cli.empty:
+            st.write("🟢 Entradas")
+            st.dataframe(recebido_cli[['data', 'total']], hide_index=True)
