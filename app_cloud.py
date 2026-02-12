@@ -81,6 +81,7 @@ DB = carregar_tudo()
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = "📝 Lançar"
 
+# --- SIDEBAR (MENU ESQUERDO RESTAURADO) ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -92,7 +93,7 @@ with st.sidebar:
         st.warning("Nenhuma obra cadastrada.")
     else:
         opcoes = DB['obras'].apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
-        selecao = st.selectbox("Selecione:", opcoes)
+        selecao = st.selectbox("Selecione a Obra:", opcoes)
         try:
             temp_id = int(selecao.split(" - ")[0])
             if temp_id in DB['obras']['id'].values:
@@ -103,8 +104,34 @@ with st.sidebar:
                 orc_cliente_atual = float(obra_row.get('orcamento_cliente', 0.0))
         except: id_obra_atual = 0
 
+    st.markdown("---")
+    
+    # BOTAO CRIAR OBRA
+    with st.expander("➕ Nova Obra"):
+        with st.form("new_obra_sidebar", clear_on_submit=True):
+            n_nome = st.text_input("Nome da Obra")
+            if st.form_submit_button("Criar Obra"):
+                if n_nome:
+                    res = supabase.table("obras").insert({"nome": n_nome, "status": "Ativa"}).execute()
+                    new_id = res.data[0]['id']
+                    # Criar Cronograma Base
+                    lista_crono = [{"id_obra": new_id, "etapa": str(e), "status": "Pendente", "orcamento": float(o), "porcentagem": 0} for e, o, _ in TEMPLATE_ETAPAS]
+                    supabase.table("cronograma").insert(lista_crono).execute()
+                    st.success("Obra Criada!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+
+    # BOTAO EXCLUIR OBRA
+    if id_obra_atual > 0:
+        st.markdown("---")
+        if st.button("🗑️ Excluir Obra Atual", type="primary"):
+            # Deletar tudo ligado a essa obra
+            supabase.table("custos").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("tarefas").delete().eq("id_obra", id_obra_atual).execute()
+            supabase.table("obras").delete().eq("id", id_obra_atual).execute()
+            st.success("Obra e dados excluídos!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+
 if id_obra_atual == 0:
-    st.info("👈 Selecione uma obra.")
+    st.info("👈 Selecione ou crie uma obra no menu lateral.")
     st.stop()
 
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual] if not DB['custos'].empty else pd.DataFrame()
@@ -174,12 +201,11 @@ with tabs[4]:
         st.metric("Total Gasto Geral", formatar_moeda(custos_f['total'].sum()))
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. PAGAMENTOS (PAGAMENTOS E RECEBIMENTOS SEPARADOS)
+# 6. PAGAMENTOS
 with tabs[5]:
     st.session_state.active_tab = "💰 Pagamentos"
     st.subheader(f"💰 Gestão Financeira - {nome_obra_atual}")
     
-    # --- DEFINIÇÃO DE ORÇAMENTOS ---
     col_orc1, col_orc2 = st.columns(2)
     with col_orc1:
         novo_orc_p = st.number_input("Orçamento Total Pedreiro (R$)", min_value=0.0, value=orc_pedreiro_atual, step=100.0)
@@ -193,9 +219,8 @@ with tabs[5]:
     
     st.markdown("---")
     
-    # --- LANÇAR MOVIMENTAÇÃO ---
     with st.form("form_financeiro", clear_on_submit=True):
-        st.write("➕ **Lançar Movimentação (Pagamento ou Recebimento)**")
+        st.write("➕ **Lançar Movimentação**")
         cp1, cp2, cp3 = st.columns(3)
         tipo = cp1.selectbox("Tipo", ["Pagamento (Saída)", "Recebimento (Entrada)"])
         dt_mov = cp2.date_input("Data", datetime.now())
@@ -210,58 +235,30 @@ with tabs[5]:
                     "valor": v_mov, "qtd": 1, "total": v_mov,
                     "etapa": etapa_fin, "data": str(dt_mov)
                 }).execute()
-                st.success("Lançamento realizado!"); st.cache_data.clear(); st.rerun()
+                st.success("Sucesso!"); st.cache_data.clear(); st.rerun()
 
-    # --- CÁLCULOS ---
+    # Cálculos e Históricos Separados
     pagos_mo = custos_f[custos_f['etapa'] == "Mão de Obra"] if not custos_f.empty else pd.DataFrame()
     recebido_cli = custos_f[custos_f['etapa'] == "Entrada Cliente"] if not custos_f.empty else pd.DataFrame()
     
-    total_pago_mo = pagos_mo['total'].sum() if not pagos_mo.empty else 0.0
-    total_recebido = recebido_cli['total'].sum() if not recebido_cli.empty else 0.0
-    
-    saldo_pedreiro = novo_orc_p - total_pago_mo
-    saldo_cliente = novo_orc_c - total_recebido
-
-    # --- RESUMO VISUAL ---
-    st.markdown("### 📊 Resumo Financeiro")
+    st.markdown("### 📊 Resumo")
     r1, r2 = st.columns(2)
     with r1:
-        st.info("**Mão de Obra (Pedreiro)**")
-        st.metric("Total Pago", formatar_moeda(total_pago_mo))
-        st.metric("Saldo a Pagar", formatar_moeda(saldo_pedreiro), delta_color="inverse")
+        st.info("**Mão de Obra**")
+        st.metric("Total Pago", formatar_moeda(pagos_mo['total'].sum() if not pagos_mo.empty else 0))
+        st.metric("Saldo a Pagar", formatar_moeda(novo_orc_p - (pagos_mo['total'].sum() if not pagos_mo.empty else 0)))
     with r2:
-        st.success("**Entradas (Cliente)**")
-        st.metric("Total Recebido", formatar_moeda(total_recebido))
-        st.metric("Saldo a Receber", formatar_moeda(saldo_cliente))
+        st.success("**Cliente**")
+        st.metric("Total Recebido", formatar_moeda(recebido_cli['total'].sum() if not recebido_cli.empty else 0))
+        st.metric("Saldo a Receber", formatar_moeda(novo_orc_c - (recebido_cli['total'].sum() if not recebido_cli.empty else 0)))
 
-    # --- HISTÓRICOS SEPARADOS ---
     st.markdown("---")
-    col_hist1, col_hist2 = st.columns(2)
-    
-    with col_hist1:
-        st.write("🔴 **Histórico de Saídas (Pedreiro)**")
-        if not pagos_mo.empty:
-            st.dataframe(
-                pagos_mo[['data', 'total']].sort_values('data', ascending=False),
-                hide_index=True, use_container_width=True,
-                column_config={
-                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                    "total": st.column_config.NumberColumn("Valor Pago", format="R$ %.2f")
-                }
-            )
-        else:
-            st.caption("Nenhum pagamento registrado.")
-
-    with col_hist2:
-        st.write("🟢 **Histórico de Entradas (Cliente)**")
-        if not recebido_cli.empty:
-            st.dataframe(
-                recebido_cli[['data', 'total']].sort_values('data', ascending=False),
-                hide_index=True, use_container_width=True,
-                column_config={
-                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                    "total": st.column_config.NumberColumn("Valor Recebido", format="R$ %.2f")
-                }
-            )
-        else:
-            st.caption("Nenhum recebimento registrado.")
+    ch1, ch2 = st.columns(2)
+    with ch1:
+        st.write("🔴 **Saídas (Pedreiro)**")
+        st.dataframe(pagos_mo[['data', 'total']], hide_index=True, use_container_width=True,
+                     column_config={"data": st.column_config.DateColumn(format="DD/MM/YYYY"), "total": st.column_config.NumberColumn(format="R$ %.2f")})
+    with ch2:
+        st.write("🟢 **Entradas (Cliente)**")
+        st.dataframe(recebido_cli[['data', 'total']], hide_index=True, use_container_width=True,
+                     column_config={"data": st.column_config.DateColumn(format="DD/MM/YYYY"), "total": st.column_config.NumberColumn(format="R$ %.2f")})
