@@ -21,7 +21,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- PADRÃO DE ETAPAS (Extraído do seu cronograma.xlsx - Removido duplicatas) ---
+# --- PADRÃO DE ETAPAS (Fiel ao seu arquivo cronograma.xlsx) ---
 ETAPAS_PADRAO = [
     {"pai": "1. Planejamento e Preliminares", "sub": "Projetos e Aprovações"},
     {"pai": "1. Planejamento e Preliminares", "sub": "Limpeza do Terreno"},
@@ -47,19 +47,19 @@ ETAPAS_PADRAO = [
     {"pai": "3. Supraestrutura e Alvenaria", "sub": "Impermeabilização dos Banheiros"},
     {"pai": "4. Alvenaria e Vedação", "sub": "Vergas e Contravergas"},
     {"pai": "4. Alvenaria e Vedação", "sub": "Chapisco e Emboço"},
-    {"pai": "4. Cobertura", "sub": "Estrutura Telhado"},
-    {"pai": "4. Cobertura", "sub": "Telhamento"},
-    {"pai": "4. Cobertura", "sub": "Calhas e Rufos"},
-    {"pai": "4. Cobertura", "sub": "Montagem da Lage"},
-    {"pai": "4. Cobertura", "sub": "Passagem e Conferencia dos Conduites"},
-    {"pai": "5. Instalações", "sub": "Tubulação Água/Esgoto"},
-    {"pai": "5. Instalações", "sub": "Eletrodutos e Caixinhas"},
-    {"pai": "5. Instalações", "sub": "Fiação e Cabos"},
-    {"pai": "5. Instalações", "sub": "Tubulação Gás/Ar"},
-    {"pai": "5. Instalações", "sub": "Conferir medidas de saida de esgoto do vaso"},
-    {"pai": "5. Instalações", "sub": "Ralo dentro e fora do boxe"},
-    {"pai": "5. Instalações", "sub": "Conferir medida do desnível para o chuveiro"},
-    {"pai": "5. Instalações", "sub": "Conferir novamente pontos de esgoto e aguá das pias(alturas)"},
+    {"pai": "5. Cobertura", "sub": "Estrutura Telhado"},
+    {"pai": "5. Cobertura", "sub": "Telhamento"},
+    {"pai": "5. Cobertura", "sub": "Calhas e Rufos"},
+    {"pai": "5. Cobertura", "sub": "Montagem da Lage"},
+    {"pai": "5. Cobertura", "sub": "Passagem e Conferencia dos Conduites"},
+    {"pai": "6. Instalações", "sub": "Tubulação Água/Esgoto"},
+    {"pai": "6. Instalações", "sub": "Eletrodutos e Caixinhas"},
+    {"pai": "6. Instalações", "sub": "Fiação e Cabos"},
+    {"pai": "6. Instalações", "sub": "Tubulação Gás/Ar"},
+    {"pai": "6. Instalações", "sub": "Conferir medidas de saida de esgoto do vaso"},
+    {"pai": "6. Instalações", "sub": "Ralo dentro e fora do boxe"},
+    {"pai": "6. Instalações", "sub": "Conferir medida do desnível para o chuveiro"},
+    {"pai": "6. Instalações", "sub": "Conferir novamente pontos de esgoto e aguá das pias(alturas)"},
     {"pai": "7. Acabamentos", "sub": "Contrapiso"},
     {"pai": "7. Acabamentos", "sub": "Reboco/Gesso"},
     {"pai": "7. Acabamentos", "sub": "Revestimentos (Piso/Parede)"},
@@ -123,6 +123,7 @@ if not st.session_state["password_correct"]:
 
 DB = carregar_tudo()
 
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🏢 Obra Ativa")
     id_obra_atual = 0
@@ -138,14 +139,15 @@ with st.sidebar:
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
         n_nome = st.text_input("Nome da Obra")
-        if st.button("Criar"):
-            res = supabase.table("obras").insert({"nome": n_nome}).execute()
-            new_id = res.data[0]['id']
-            # Cria cronograma baseado nas etapas e subetapas do Excel
-            for item in ETAPAS_PADRAO:
-                nome_completo = f"{item['pai']} | {item['sub']}"
-                supabase.table("cronograma").insert({"id_obra": new_id, "etapa": nome_completo, "porcentagem": 0}).execute()
-            st.success("Obra Criada!"); st.cache_data.clear(); st.rerun()
+        if st.button("Criar Obra"):
+            if n_nome:
+                res = supabase.table("obras").insert({"nome": n_nome}).execute()
+                new_id = res.data[0]['id']
+                # INSERÇÃO REAL DE CADA SUBETAPA COMO REGISTRO INDIVIDUAL NO BANCO
+                for item in ETAPAS_PADRAO:
+                    nome_completo = f"{item['pai']} | {item['sub']}"
+                    supabase.table("cronograma").insert({"id_obra": new_id, "etapa": nome_completo, "porcentagem": 0}).execute()
+                st.success("Obra e Cronograma Criados!"); st.cache_data.clear(); st.rerun()
 
     if id_obra_atual > 0:
         if st.button("🗑️ Excluir Obra Atual", type="primary"):
@@ -155,13 +157,15 @@ with st.sidebar:
             supabase.table("obras").delete().eq("id", id_obra_atual).execute()
             st.cache_data.clear(); st.rerun()
 
-if id_obra_atual == 0: st.stop()
+if id_obra_atual == 0:
+    st.info("👈 Selecione ou crie uma obra.")
+    st.stop()
 
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual]
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual]
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual]
 
-# --- ABAS (Estrutura Mantida) ---
+# --- ABAS (Estrutura 100% Preservada) ---
 tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos"])
 
 # 1. LANÇAR
@@ -172,49 +176,39 @@ with tabs[0]:
         desc = c1.text_input("Descrição do Item")
         valor = c2.number_input("Valor Unitário (R$)", 0.0)
         qtd = c3.number_input("Qtd", 1.0)
-        # Lista de etapas para seleção baseada nos pais do Excel
+        # Lista de categorias baseada nas etapas pai para lançamentos financeiros
         lista_pais = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
-        etapa_l = st.selectbox("Etapa", lista_pais + ["Mão de Obra"])
+        etapa_fin = st.selectbox("Etapa de Gasto", lista_pais + ["Mão de Obra"])
         if st.form_submit_button("Salvar Gasto"):
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_l, "data": str(datetime.now().date())}).execute()
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(datetime.now().date())}).execute()
             st.success("Salvo!"); st.cache_data.clear(); st.rerun()
 
-# 2. CRONOGRAMA (AGRUPADO E EDITÁVEL)
+# 2. CRONOGRAMA (Com Agrupamento e Edição/Exclusão)
 with tabs[1]:
-    st.subheader(f"📅 Cronograma: {nome_obra}")
-    
+    st.subheader(f"📅 Progresso Detalhado")
     if not crono_f.empty:
-        # Agrupamento visual por Etapa Pai (usando o separador '|')
-        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Personalizada")
+        # Extração de Pai e Sub para exibição organizada
+        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else "Extra")
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else x)
         
-        pais_unicos = sorted(crono_f['pai'].unique())
-        for pai in pais_unicos:
-            st.markdown(f"### 🏗️ {pai}")
+        for pai in sorted(crono_f['pai'].unique()):
+            st.markdown(f"#### 🏗️ {pai}")
             sub_itens = crono_f[crono_f['pai'] == pai]
-            
-            for i, row in sub_itens.iterrows():
-                with st.expander(f"🔹 {row['sub']} - {row['porcentagem']}%"):
+            for _, row in sub_itens.iterrows():
+                with st.expander(f"{row['sub']} - {row['porcentagem']}%"):
                     c1, c2 = st.columns([3, 1])
-                    nv_nome_sub = c1.text_input("Editar Subetapa", value=row['sub'], key=f"nm_{row['id']}")
-                    nv_prog = c1.slider("Progresso (%)", 0, 100, int(row['porcentagem']), key=f"sl_{row['id']}")
-                    
-                    if c2.button("💾 Salvar", key=f"sv_{row['id']}"):
-                        nome_db = f"{pai} | {nv_nome_sub}" if pai != "Personalizada" else nv_nome_sub
-                        supabase.table("cronograma").update({"etapa": nome_db, "porcentagem": nv_prog}).eq("id", row['id']).execute()
+                    nv_n = c1.text_input("Nome", value=row['sub'], key=f"n_{row['id']}")
+                    nv_p = c1.slider("Progresso", 0, 100, int(row['porcentagem']), key=f"p_{row['id']}")
+                    if c2.button("💾", key=f"s_{row['id']}"):
+                        db_name = f"{pai} | {nv_n}" if pai != "Extra" else nv_n
+                        supabase.table("cronograma").update({"etapa": db_name, "porcentagem": nv_p}).eq("id", row['id']).execute()
                         st.cache_data.clear(); st.rerun()
-                    if c2.button("🗑️ Apagar", key=f"del_{row['id']}"):
+                    if c2.button("🗑️", key=f"d_{row['id']}"):
                         supabase.table("cronograma").delete().eq("id", row['id']).execute()
                         st.cache_data.clear(); st.rerun()
             st.markdown("---")
-    
-    with st.expander("➕ Adicionar Etapa Personalizada"):
-        nova_etp_manual = st.text_input("Nome da Etapa")
-        if st.button("Adicionar"):
-            supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": nova_etp_manual, "porcentagem": 0}).execute()
-            st.cache_data.clear(); st.rerun()
 
-# 3. TAREFAS
+# 3. TAREFAS (Editor Restaurado)
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
     with st.form("form_tarefa", clear_on_submit=True):
@@ -233,45 +227,45 @@ with tabs[2]:
 
 # 4. HISTÓRICO
 with tabs[3]:
-    st.subheader("📊 Histórico de Gastos")
+    st.subheader("📊 Histórico Completo")
     st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
 
 # 5. DASHBOARD
 with tabs[4]:
-    st.subheader("📈 Resumo Visual")
+    st.subheader("📈 Resumo de Custos")
     if not custos_f.empty:
-        st.metric("Gasto Total", formatar_moeda(custos_f['total'].sum()))
+        st.metric("Total Gasto", formatar_moeda(custos_f['total'].sum()))
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. PAGAMENTOS
+# 6. PAGAMENTOS (Estrutura Restaurada)
 with tabs[5]:
     st.subheader(f"💰 Financeiro - {nome_obra}")
     co1, co2 = st.columns(2)
-    new_p = co1.number_input("Orc. Pedreiro", value=orc_p)
-    new_c = co2.number_input("Orc. Cliente", value=orc_c)
+    nP = co1.number_input("Orçamento Pedreiro", value=orc_p)
+    nC = co2.number_input("Orçamento Cliente", value=orc_c)
     if st.button("💾 Salvar Orçamentos Totais"):
-        supabase.table("obras").update({"orcamento_pedreiro": new_p, "orcamento_cliente": new_c}).eq("id", id_obra_atual).execute()
+        supabase.table("obras").update({"orcamento_pedreiro": nP, "orcamento_cliente": nC}).eq("id", id_obra_atual).execute()
         st.cache_data.clear(); st.rerun()
     
     with st.form("f_fin", clear_on_submit=True):
         st.write("➕ **Lançar Pagamento / Recebimento**")
         cp1, cp2, cp3 = st.columns(3)
-        tipo = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
-        val = cp2.number_input("Valor R$")
+        t = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
+        v = cp2.number_input("Valor R$")
         if st.form_submit_button("Confirmar"):
-            cat = "Mão de Obra" if "Saída" in tipo else "Entrada Cliente"
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": tipo, "valor": val, "total": val, "etapa": cat, "data": str(datetime.now().date())}).execute()
+            cat = "Mão de Obra" if "Saída" in t else "Entrada Cliente"
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": t, "valor": v, "total": v, "etapa": cat, "data": str(datetime.now().date())}).execute()
             st.cache_data.clear(); st.rerun()
 
-    pagos_mo = custos_f[custos_f['etapa'] == "Mão de Obra"]
-    recebido_cli = custos_f[custos_f['etapa'] == "Entrada Cliente"]
-    r1, r2 = st.columns(2)
-    r1.metric("Saldo Pedreiro", formatar_moeda(new_p - pagos_mo['total'].sum()))
-    r2.metric("Saldo Cliente", formatar_moeda(new_c - recebido_cli['total'].sum()))
+    p_mo = custos_f[custos_f['etapa'] == "Mão de Obra"]
+    r_cl = custos_f[custos_f['etapa'] == "Entrada Cliente"]
+    res1, res2 = st.columns(2)
+    res1.metric("Saldo Pedreiro", formatar_moeda(nP - p_mo['total'].sum()))
+    res2.metric("Saldo Cliente", formatar_moeda(nC - r_cl['total'].sum()))
 
     st.markdown("---")
     h1, h2 = st.columns(2)
     h1.write("🔴 Saídas")
-    h1.dataframe(pagos_mo[['data', 'total']], hide_index=True)
+    h1.dataframe(p_mo[['data', 'total']], hide_index=True, use_container_width=True)
     h2.write("🟢 Entradas")
-    h2.dataframe(recebido_cli[['data', 'total']], hide_index=True)
+    h2.dataframe(r_cl[['data', 'total']], hide_index=True, use_container_width=True)
