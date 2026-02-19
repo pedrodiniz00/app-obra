@@ -222,9 +222,11 @@ with tabs[1]:
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
 
-# 3. ABA TAREFAS
+# 3. ABA TAREFAS (Atualizada com botão de Concluídas)
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
+    
+    # Criar Tarefa
     with st.form("f_tar", clear_on_submit=True):
         c1, c2 = st.columns(2)
         nt = c1.text_input("Tarefa")
@@ -232,12 +234,42 @@ with tabs[2]:
         if st.form_submit_button("Adicionar Tarefa"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
             st.cache_data.clear(); st.rerun()
+    
+    st.divider()
+
+    # Visualização e Botão de Filtro
+    col_t1, col_t2 = st.columns([4, 1])
+    ver_concluidas = col_t2.toggle("Ver Concluídas", value=False)
+    
     if not tarefas_f.empty:
-        df_e = st.data_editor(tarefas_f[['id', 'descricao', 'responsavel', 'status']], key="ed_t", hide_index=True, use_container_width=True)
-        if st.button("Salvar Alterações Tarefas"):
-            for _, r in df_e.iterrows():
-                supabase.table("tarefas").update({"descricao": r['descricao'], "responsavel": r['responsavel'], "status": r['status']}).eq("id", r['id']).execute()
-            st.cache_data.clear(); st.rerun()
+        # Filtrar tarefas conforme o botão
+        df_view = tarefas_f[tarefas_f['status'] == "Concluída"] if ver_concluidas else tarefas_f[tarefas_f['status'] != "Concluída"]
+        
+        if not df_view.empty:
+            df_e = st.data_editor(
+                df_view[['id', 'descricao', 'responsavel', 'status']], 
+                key=f"ed_t_{ver_concluidas}", 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "status": st.column_config.SelectboxColumn("Status", options=["Pendente", "Em Andamento", "Concluída"])
+                }
+            )
+            
+            # Botão para salvar alterações na tabela
+            if st.button("💾 Salvar Alterações na Lista"):
+                for _, r in df_e.iterrows():
+                    supabase.table("tarefas").update({"descricao": r['descricao'], "responsavel": r['responsavel'], "status": r['status']}).eq("id", r['id']).execute()
+                st.cache_data.clear(); st.rerun()
+            
+            # Botão exclusivo para excluir de vez as concluídas (limpeza de banco)
+            if ver_concluidas and st.button("🗑️ Excluir Todas as Concluídas Permanentemente"):
+                ids_para_deletar = df_view['id'].tolist()
+                for d_id in ids_para_deletar:
+                    supabase.table("tarefas").delete().eq("id", d_id).execute()
+                st.cache_data.clear(); st.rerun()
+        else:
+            st.info("Nenhuma tarefa encontrada para este filtro.")
 
 # 4. ABA HISTÓRICO
 with tabs[3]:
