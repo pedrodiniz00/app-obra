@@ -76,7 +76,7 @@ def carregar_tudo():
         if tbl == 'obras':
             df = garantir_colunas(df, ['id', 'nome', 'orcamento_pedreiro', 'orcamento_cliente', 'arquivada'])
         if tbl == 'custos':
-            df = garantir_colunas(df, ['id', 'id_obra', 'valor', 'total', 'descricao', 'data', 'etapa'])
+            df = garantir_colunas(df, ['id', 'id_obra', 'valor', 'total', 'descricao', 'data', 'etapa', 'fornecedor'])
             if not df.empty: df['data'] = pd.to_datetime(df['data']).dt.date
         if tbl == 'cronograma':
             df = garantir_colunas(df, ['id', 'id_obra', 'etapa', 'porcentagem'])
@@ -160,24 +160,42 @@ fornecedores_f = DB['fornecedores']
 # --- ABAS ---
 tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos", "📦 Cadastro", "👷 Prestadores"])
 
-# 1. ABA LANÇAR
+# 1. ABA LANÇAR (Atualizada com Fornecedor)
 with tabs[0]:
     st.subheader(f"Lançar Custo - {nome_obra}")
     with st.form("form_lancar", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         l_pais = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
         etapa_fin = c1.selectbox("Etapa", l_pais + ["Mão de Obra"])
+        
+        # Seleção de Material ou Prestador
         if etapa_fin == "Mão de Obra":
             p_lista = prestadores_f['nome'].tolist()
             desc = c2.selectbox("Prestador", p_lista) if p_lista else c2.text_input("Nome")
+            forn_vinculo = "" # Prestador não costuma ter fornecedor loja
         else:
             m_lista = DB['materiais']['nome'].tolist()
             desc = c2.selectbox("Material", m_lista) if m_lista else c2.text_input("Descrição")
-        valor = c3.number_input("R$", 0.0, format="%.2f")
-        qtd = st.number_input("Qtd", 1.0, step=0.1)
-        dt_in = st.date_input("Data", format="DD/MM/YYYY")
+            # NOVO CAMPO: Seleção de Fornecedor para materiais
+            f_lista = fornecedores_f['nome'].tolist()
+            forn_vinculo = c3.selectbox("Fornecedor/Loja", ["-"] + f_lista)
+
+        valor = st.number_input("Valor Unitário (R$)", 0.0, format="%.2f")
+        qtd = st.number_input("Quantidade", 1.0, step=0.1)
+        dt_in = st.date_input("Data da Compra/Serviço", format="DD/MM/YYYY")
+        
         if st.form_submit_button("Salvar Lançamento"):
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in)}).execute()
+            forn_final = forn_vinculo if forn_vinculo != "-" else ""
+            supabase.table("custos").insert({
+                "id_obra": id_obra_atual, 
+                "descricao": desc, 
+                "valor": valor, 
+                "qtd": qtd, 
+                "total": valor*qtd, 
+                "etapa": etapa_fin, 
+                "data": str(dt_in),
+                "fornecedor": forn_final
+            }).execute()
             st.cache_data.clear(); st.rerun()
 
 # 2. ABA CRONOGRAMA
@@ -224,8 +242,11 @@ with tabs[2]:
 # 4. ABA HISTÓRICO
 with tabs[3]:
     st.subheader("📊 Histórico Geral")
-    st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, 
-                 column_config={"total": st.column_config.NumberColumn("Total", format="R$ %.2f"), "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
+    st.dataframe(custos_f[['data', 'descricao', 'fornecedor', 'total', 'etapa']], use_container_width=True, 
+                 column_config={
+                     "total": st.column_config.NumberColumn("Total", format="R$ %.2f"), 
+                     "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
+                 })
 
 # 5. ABA DASHBOARD
 with tabs[4]:
@@ -239,7 +260,7 @@ with tabs[4]:
         st.divider()
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. ABA PAGAMENTOS (Histórico Separado com R$ e Edição/Exclusão)
+# 6. ABA PAGAMENTOS
 with tabs[5]:
     st.subheader("💰 Gestão de Pagamentos e Recebimentos")
     p_m = custos_f[custos_f['etapa'] == "Mão de Obra"].copy()
@@ -257,7 +278,7 @@ with tabs[5]:
     
     st.divider()
     with st.form("f_fin_new", clear_on_submit=True):
-        st.write("➕ **Novo Lançamento**")
+        st.write("➕ **Novo Lançamento Financeiro**")
         cp1, cp2, cp3 = st.columns(3)
         tipo = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
         p_list = prestadores_f['nome'].tolist()
@@ -272,53 +293,38 @@ with tabs[5]:
 
     st.markdown("---")
     st.write("### 📜 Histórico de Lançamentos")
-    st.caption("Altere os dados nas tabelas abaixo e clique em 'Sincronizar' para salvar alterações ou excluir registros.")
-    
     col_saida, col_entrada = st.columns(2)
     
     with col_saida:
-        st.error("🔴 Detalhe de Saídas (Mão de Obra)")
+        st.error("🔴 Detalhe de Saídas")
         if not p_m.empty:
             p_m_edit = st.data_editor(
                 p_m[['id', 'data', 'descricao', 'total']].sort_values(by='data', ascending=False),
                 key="ed_saidas", hide_index=True, num_rows="dynamic", use_container_width=True,
-                column_config={
-                    "total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
-                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
-                }
+                column_config={"total": st.column_config.NumberColumn("Valor", format="R$ %.2f"), "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")}
             )
         else: st.info("Sem saídas.")
 
     with col_entrada:
-        st.success("🟢 Detalhe de Entradas (Cliente)")
+        st.success("🟢 Detalhe de Entradas")
         if not r_cl.empty:
             r_cl_edit = st.data_editor(
                 r_cl[['id', 'data', 'descricao', 'total']].sort_values(by='data', ascending=False),
                 key="ed_entradas", hide_index=True, num_rows="dynamic", use_container_width=True,
-                column_config={
-                    "total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
-                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
-                }
+                column_config={"total": st.column_config.NumberColumn("Valor", format="R$ %.2f"), "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")}
             )
         else: st.info("Sem entradas.")
 
-    if st.button("💾 Sincronizar Tudo (Salvar Alterações e Exclusões)"):
-        # Lógica para Saídas
-        ids_originais_s = set(p_m['id'].tolist())
-        ids_atuais_s = set(p_m_edit['id'].dropna().tolist())
-        for d_id in (ids_originais_s - ids_atuais_s): supabase.table("custos").delete().eq("id", d_id).execute()
-        for _, r in p_m_edit.iterrows():
-            if pd.notnull(r['id']):
-                supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
-        
-        # Lógica para Entradas
-        ids_originais_e = set(r_cl['id'].tolist())
-        ids_atuais_e = set(r_cl_edit['id'].dropna().tolist())
-        for d_id in (ids_originais_e - ids_atuais_e): supabase.table("custos").delete().eq("id", d_id).execute()
-        for _, r in r_cl_edit.iterrows():
-            if pd.notnull(r['id']):
-                supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
-        
+    if st.button("💾 Sincronizar Pagamentos"):
+        # Sincronização de Saídas e Entradas conforme lógica anterior
+        for d in [(p_m, p_m_edit), (r_cl, r_cl_edit)]:
+            orig, edit = d
+            ids_orig = set(orig['id'].tolist())
+            ids_edit = set(edit['id'].dropna().tolist())
+            for d_id in (ids_orig - ids_edit): supabase.table("custos").delete().eq("id", d_id).execute()
+            for _, r in edit.iterrows():
+                if pd.notnull(r['id']):
+                    supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
         st.cache_data.clear(); st.rerun()
 
 # 7. ABA CADASTRO
