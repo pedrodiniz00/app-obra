@@ -223,13 +223,13 @@ with tabs[2]:
 
 # 4. ABA HISTÓRICO
 with tabs[3]:
-    st.subheader("📊 Histórico")
+    st.subheader("📊 Histórico Geral")
     st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, 
                  column_config={"total": st.column_config.NumberColumn("Total", format="R$ %.2f"), "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
 
 # 5. ABA DASHBOARD
 with tabs[4]:
-    st.subheader("📈 Dashboard")
+    st.subheader("📈 Dashboard Financeiro")
     if not custos_f.empty:
         tg = custos_f['total'].sum()
         c1, c2, c3 = st.columns(3)
@@ -239,13 +239,14 @@ with tabs[4]:
         st.divider()
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. ABA PAGAMENTOS (Editável e com R$)
+# 6. ABA PAGAMENTOS (Histórico Separado com R$ e Edição/Exclusão)
 with tabs[5]:
     st.subheader("💰 Gestão de Pagamentos e Recebimentos")
     p_m = custos_f[custos_f['etapa'] == "Mão de Obra"].copy()
-    r_c = custos_f[custos_f['etapa'] == "Entrada Cliente"].copy()
+    r_cl = custos_f[custos_f['etapa'] == "Entrada Cliente"].copy()
+    
     t_s = p_m['total'].sum()
-    t_e = r_c['total'].sum()
+    t_e = r_cl['total'].sum()
 
     res1, res2, res3, res4 = st.columns(4)
     res1.metric("Entradas", formatar_moeda(t_e))
@@ -256,7 +257,7 @@ with tabs[5]:
     
     st.divider()
     with st.form("f_fin_new", clear_on_submit=True):
-        st.write("➕ **Novo Lançamento Financeiro**")
+        st.write("➕ **Novo Lançamento**")
         cp1, cp2, cp3 = st.columns(3)
         tipo = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
         p_list = prestadores_f['nome'].tolist()
@@ -270,48 +271,55 @@ with tabs[5]:
             st.cache_data.clear(); st.rerun()
 
     st.markdown("---")
-    st.write("### 📝 Alterar ou Excluir Lançamentos")
-    st.caption("Altere os dados na tabela abaixo e clique em 'Sincronizar Financeiro' ou selecione e delete para excluir.")
+    st.write("### 📜 Histórico de Lançamentos")
+    st.caption("Altere os dados nas tabelas abaixo e clique em 'Sincronizar' para salvar alterações ou excluir registros.")
     
-    # Unindo entradas e saídas para edição única
-    df_fin = pd.concat([p_m, r_c])
-    if not df_fin.empty:
-        df_fin = df_fin[['id', 'data', 'descricao', 'total', 'etapa']].sort_values(by='data', ascending=False)
-        # Data Editor para Alterar e Excluir
-        df_editado = st.data_editor(
-            df_fin, 
-            key="ed_financeiro", 
-            hide_index=True, 
-            num_rows="dynamic", # Permite excluir linhas
-            use_container_width=True,
-            column_config={
-                "total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
-                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                "etapa": st.column_config.SelectboxColumn("Tipo", options=["Mão de Obra", "Entrada Cliente"])
-            }
-        )
+    col_saida, col_entrada = st.columns(2)
+    
+    with col_saida:
+        st.error("🔴 Detalhe de Saídas (Mão de Obra)")
+        if not p_m.empty:
+            p_m_edit = st.data_editor(
+                p_m[['id', 'data', 'descricao', 'total']].sort_values(by='data', ascending=False),
+                key="ed_saidas", hide_index=True, num_rows="dynamic", use_container_width=True,
+                column_config={
+                    "total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
+                }
+            )
+        else: st.info("Sem saídas.")
+
+    with col_entrada:
+        st.success("🟢 Detalhe de Entradas (Cliente)")
+        if not r_cl.empty:
+            r_cl_edit = st.data_editor(
+                r_cl[['id', 'data', 'descricao', 'total']].sort_values(by='data', ascending=False),
+                key="ed_entradas", hide_index=True, num_rows="dynamic", use_container_width=True,
+                column_config={
+                    "total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")
+                }
+            )
+        else: st.info("Sem entradas.")
+
+    if st.button("💾 Sincronizar Tudo (Salvar Alterações e Exclusões)"):
+        # Lógica para Saídas
+        ids_originais_s = set(p_m['id'].tolist())
+        ids_atuais_s = set(p_m_edit['id'].dropna().tolist())
+        for d_id in (ids_originais_s - ids_atuais_s): supabase.table("custos").delete().eq("id", d_id).execute()
+        for _, r in p_m_edit.iterrows():
+            if pd.notnull(r['id']):
+                supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
         
-        if st.button("💾 Sincronizar Financeiro (Salvar/Excluir)"):
-            # Lógica para identificar excluídos e alterados
-            ids_atuais = set(df_editado['id'].dropna().tolist())
-            ids_originais = set(df_fin['id'].tolist())
-            ids_para_deletar = ids_originais - ids_atuais
-            
-            # 1. Deletar
-            for d_id in ids_para_deletar:
-                supabase.table("custos").delete().eq("id", d_id).execute()
-            
-            # 2. Atualizar
-            for _, r in df_editado.iterrows():
-                if pd.notnull(r['id']):
-                    supabase.table("custos").update({
-                        "data": str(r['data']),
-                        "descricao": r['descricao'],
-                        "total": r['total'],
-                        "etapa": r['etapa']
-                    }).eq("id", r['id']).execute()
-            
-            st.success("Financeiro Atualizado!"); st.cache_data.clear(); st.rerun()
+        # Lógica para Entradas
+        ids_originais_e = set(r_cl['id'].tolist())
+        ids_atuais_e = set(r_cl_edit['id'].dropna().tolist())
+        for d_id in (ids_originais_e - ids_atuais_e): supabase.table("custos").delete().eq("id", d_id).execute()
+        for _, r in r_cl_edit.iterrows():
+            if pd.notnull(r['id']):
+                supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
+        
+        st.cache_data.clear(); st.rerun()
 
 # 7. ABA CADASTRO
 with tabs[6]:
