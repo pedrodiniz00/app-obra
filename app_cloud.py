@@ -21,7 +21,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- PADRÃO DE ETAPAS (Original Fiel) ---
+# --- PADRÃO DE ETAPAS ---
 ETAPAS_PADRAO = [
     {"pai": "1. Planejamento e Preliminares", "sub": "Projetos e Aprovações"},
     {"pai": "1. Planejamento e Preliminares", "sub": "Limpeza do Terreno"},
@@ -71,7 +71,8 @@ def run_query(table_name):
 @st.cache_data(ttl=2) 
 def carregar_tudo():
     dados = {}
-    for tbl in ["obras", "custos", "cronograma", "tarefas", "materiais", "prestadores"]:
+    # Carregando todas as 7 tabelas necessárias
+    for tbl in ["obras", "custos", "cronograma", "tarefas", "materiais", "prestadores", "fornecedores"]:
         df = run_query(tbl)
         if tbl == 'obras':
             df = garantir_colunas(df, ['id', 'nome', 'orcamento_pedreiro', 'orcamento_cliente', 'arquivada'])
@@ -86,6 +87,8 @@ def carregar_tudo():
             df = garantir_colunas(df, ['id', 'nome'], "texto")
         if tbl == 'prestadores':
             df = garantir_colunas(df, ['id', 'nome', 'especialidade'], "texto")
+        if tbl == 'fornecedores':
+            df = garantir_colunas(df, ['id', 'nome', 'telefone', 'categoria'], "texto")
         dados[tbl] = df
     return dados
 
@@ -104,7 +107,7 @@ if not st.session_state["password_correct"]:
 
 DB = carregar_tudo()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (Gestão de Obras) ---
 with st.sidebar:
     st.header("🏢 Obras")
     ver_arquivadas = st.checkbox("Ver Arquivadas")
@@ -125,7 +128,7 @@ with st.sidebar:
             with c_ed:
                 with st.popover("✏️ Editar"):
                     nv_nome = st.text_input("Nome", value=nome_obra)
-                    if st.button("Salvar"):
+                    if st.button("Salvar Nome"):
                         supabase.table("obras").update({"nome": nv_nome}).eq("id", id_obra_atual).execute()
                         st.cache_data.clear(); st.rerun()
             with c_ar:
@@ -136,8 +139,8 @@ with st.sidebar:
 
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
-        n_nome = st.text_input("Nome da Obra")
-        if st.button("Criar"):
+        n_nome = st.text_input("Nome da Nova Obra")
+        if st.button("Criar Obra"):
             if n_nome:
                 res = supabase.table("obras").insert({"nome": n_nome, "arquivada": False}).execute()
                 new_id = res.data[0]['id']
@@ -146,14 +149,15 @@ with st.sidebar:
                 st.cache_data.clear(); st.rerun()
 
 if id_obra_atual == 0:
-    st.info("👈 Selecione uma obra.")
+    st.info("👈 Selecione uma obra para começar.")
     st.stop()
 
-# Filtros Globais
+# Filtros Globais para a Obra Selecionada
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual]
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual]
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual]
 prestadores_f = DB['prestadores']
+fornecedores_f = DB['fornecedores']
 
 # --- ABAS ---
 tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos", "📦 Cadastro", "👷 Prestadores"])
@@ -165,22 +169,24 @@ with tabs[0]:
         c1, c2, c3 = st.columns(3)
         l_pais = sorted(list(set([item['pai'] for item in ETAPAS_PADRAO])))
         etapa_fin = c1.selectbox("Etapa", l_pais + ["Mão de Obra"])
+        
         if etapa_fin == "Mão de Obra":
             p_lista = prestadores_f['nome'].tolist()
             desc = c2.selectbox("Prestador", p_lista) if p_lista else c2.text_input("Nome")
         else:
             m_lista = DB['materiais']['nome'].tolist()
             desc = c2.selectbox("Material", m_lista) if m_lista else c2.text_input("Descrição")
+            
         valor = c3.number_input("R$", 0.0, format="%.2f")
         qtd = st.number_input("Qtd", 1.0, step=0.1)
         dt_in = st.date_input("Data", format="DD/MM/YYYY")
-        if st.form_submit_button("Salvar"):
+        if st.form_submit_button("Salvar Lançamento"):
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in)}).execute()
             st.cache_data.clear(); st.rerun()
 
 # 2. ABA CRONOGRAMA
 with tabs[1]:
-    st.subheader("📅 Cronograma")
+    st.subheader("📅 Cronograma de Execução")
     if not crono_f.empty:
         crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
@@ -204,60 +210,59 @@ with tabs[1]:
 
 # 3. ABA TAREFAS
 with tabs[2]:
-    st.subheader("📋 Tarefas")
+    st.subheader("📋 Gestão de Tarefas")
     with st.form("f_tar", clear_on_submit=True):
         c1, c2 = st.columns(2)
         nt = c1.text_input("Tarefa")
-        rp = c2.text_input("Resp")
-        if st.form_submit_button("Add"):
+        rp = c2.text_input("Responsável")
+        if st.form_submit_button("Adicionar Tarefa"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
             st.cache_data.clear(); st.rerun()
     if not tarefas_f.empty:
         df_e = st.data_editor(tarefas_f[['id', 'descricao', 'responsavel', 'status']], key="ed_t", hide_index=True, use_container_width=True)
-        if st.button("Salvar Tarefas"):
+        if st.button("Salvar Alterações Tarefas"):
             for _, r in df_e.iterrows():
                 supabase.table("tarefas").update({"descricao": r['descricao'], "responsavel": r['responsavel'], "status": r['status']}).eq("id", r['id']).execute()
             st.cache_data.clear(); st.rerun()
 
 # 4. ABA HISTÓRICO
 with tabs[3]:
-    st.subheader("📊 Histórico")
+    st.subheader("📊 Histórico Geral")
     st.dataframe(custos_f[['data', 'descricao', 'total', 'etapa']], use_container_width=True, 
                  column_config={"total": st.column_config.NumberColumn(format="R$ %.2f"), "data": st.column_config.DateColumn(format="DD/MM/YYYY")})
 
 # 5. ABA DASHBOARD
 with tabs[4]:
-    st.subheader("📈 Dashboard")
+    st.subheader("📈 Dashboard Financeiro")
     if not custos_f.empty:
         tg = custos_f['total'].sum()
         c1, c2, c3 = st.columns(3)
-        c1.metric("Orçamento", formatar_moeda(orc_c))
+        c1.metric("Orçamento Total", formatar_moeda(orc_c))
         c2.metric("Gasto Real", formatar_moeda(tg))
-        c3.metric("Saldo", formatar_moeda(orc_c - tg))
+        c3.metric("Saldo Restante", formatar_moeda(orc_c - tg))
         st.divider()
         st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
 # 6. ABA PAGAMENTOS
 with tabs[5]:
-    st.subheader("💰 Financeiro")
+    st.subheader("💰 Resumo Financeiro e Saldos")
     p_m = custos_f[custos_f['etapa'] == "Mão de Obra"]
     r_c = custos_f[custos_f['etapa'] == "Entrada Cliente"]
     t_s = p_m['total'].sum()
     t_e = r_c['total'].sum()
 
-    st.write("### 📊 Resumo")
     res1, res2, res3, res4 = st.columns(4)
     res1.metric("Entradas", formatar_moeda(t_e))
     res2.metric("Saídas (MO)", formatar_moeda(t_s))
     res3.metric("Saldo Pedreiro", formatar_moeda(orc_p - t_s))
     res4.metric("Saldo Cliente", formatar_moeda(orc_c - t_e))
-    st.info(f"💵 Caixa: {formatar_moeda(t_e - t_s)}")
+    st.info(f"💵 Caixa Atual: {formatar_moeda(t_e - t_s)}")
     
     st.divider()
     co1, co2 = st.columns(2)
-    nP = co1.number_input("Orçamento Pedreiro", value=orc_p, format="%.2f")
-    nC = co2.number_input("Orçamento Cliente", value=orc_c, format="%.2f")
-    if st.button("💾 Atualizar Orçamentos"):
+    nP = co1.number_input("Configurar Orç. Pedreiro", value=orc_p, format="%.2f")
+    nC = co2.number_input("Configurar Orç. Cliente", value=orc_c, format="%.2f")
+    if st.button("💾 Atualizar Valores"):
         supabase.table("obras").update({"orcamento_pedreiro": nP, "orcamento_cliente": nC}).eq("id", id_obra_atual).execute()
         st.cache_data.clear(); st.rerun()
     
@@ -267,11 +272,11 @@ with tabs[5]:
         v_d = tipo
         if tipo == "Saída (Pedreiro)":
             p_list = prestadores_f['nome'].tolist()
-            p_sel = cp2.selectbox("Quem?", p_list) if p_list else ""
+            p_sel = cp2.selectbox("Quem recebeu?", p_list) if p_list else ""
             v_d = f"Pgto: {p_sel}" if p_sel else tipo
-        val = cp3.number_input("R$", format="%.2f")
-        dt_p = st.date_input("Data Fin", format="DD/MM/YYYY")
-        if st.form_submit_button("Confirmar"):
+        val = cp3.number_input("Valor R$", format="%.2f")
+        dt_p = st.date_input("Data Lançamento", format="DD/MM/YYYY")
+        if st.form_submit_button("Confirmar Lançamento"):
             cat = "Mão de Obra" if "Saída" in tipo else "Entrada Cliente"
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": v_d, "valor": val, "total": val, "etapa": cat, "data": str(dt_p)}).execute()
             st.cache_data.clear(); st.rerun()
@@ -279,45 +284,66 @@ with tabs[5]:
     st.markdown("---")
     h1, h2 = st.columns(2)
     with h1:
-        st.error("🔴 Saídas")
+        st.error("🔴 Detalhe de Saídas")
         st.dataframe(p_m[['data', 'descricao', 'total']].sort_values(by='data', ascending=False), hide_index=True)
     with h2:
-        st.success("🟢 Entradas")
+        st.success("🟢 Detalhe de Entradas")
         st.dataframe(r_c[['data', 'descricao', 'total']].sort_values(by='data', ascending=False), hide_index=True)
 
-# 7. ABA CADASTRO
+# 7. ABA CADASTRO (Materiais + Fornecedores)
 with tabs[6]:
-    st.subheader("📦 Materiais")
-    with st.expander("📥 Importar"):
-        if st.button("Importar Materiais CSV"):
-            try:
-                df_im = pd.read_csv('Cadastro material.xlsx - Planilha1.csv')
-                for item in df_im.iloc[:, 0].dropna().unique().tolist():
-                    supabase.table("materiais").upsert({"nome": str(item)}).execute()
-                st.success("Sucesso!"); st.cache_data.clear(); st.rerun()
-            except Exception as e: st.error(f"Erro: {e}")
-    with st.form("add_mat"):
-        nm = st.text_input("Novo Item")
-        if st.form_submit_button("Cadastrar"):
-            supabase.table("materiais").insert({"nome": nm}).execute()
-            st.cache_data.clear(); st.rerun()
-    if not DB['materiais'].empty:
-        df_em = st.data_editor(DB['materiais'][['id', 'nome']], key="ed_m", num_rows="dynamic", hide_index=True, use_container_width=True)
-        if st.button("Sincronizar Cadastro"):
-            for _, r in df_em.iterrows():
-                if pd.notnull(r['id']): supabase.table("materiais").update({"nome": r['nome']}).eq("id", r['id']).execute()
-                else: supabase.table("materiais").insert({"nome": r['nome']}).execute()
-            st.cache_data.clear(); st.rerun()
+    st.subheader("📦 Central de Cadastros")
+    sub_mat, sub_forn = st.tabs(["Materiais", "Fornecedores"])
+    
+    with sub_mat:
+        with st.expander("📥 Importar Materiais"):
+            if st.button("Executar Importação CSV"):
+                try:
+                    df_im = pd.read_csv('Cadastro material.xlsx - Planilha1.csv')
+                    for item in df_im.iloc[:, 0].dropna().unique().tolist():
+                        supabase.table("materiais").upsert({"nome": str(item)}).execute()
+                    st.success("Importação Concluída!"); st.cache_data.clear(); st.rerun()
+                except Exception as e: st.error(f"Erro no CSV: {e}")
+        with st.form("add_mat"):
+            nm = st.text_input("Novo Material")
+            if st.form_submit_button("Cadastrar Material"):
+                supabase.table("materiais").insert({"nome": nm}).execute()
+                st.cache_data.clear(); st.rerun()
+        if not DB['materiais'].empty:
+            df_em = st.data_editor(DB['materiais'][['id', 'nome']], key="ed_m", num_rows="dynamic", hide_index=True, use_container_width=True)
+            if st.button("Sincronizar Materiais"):
+                for _, r in df_em.iterrows():
+                    if pd.notnull(r['id']): supabase.table("materiais").update({"nome": r['nome']}).eq("id", r['id']).execute()
+                    else: supabase.table("materiais").insert({"nome": r['nome']}).execute()
+                st.cache_data.clear(); st.rerun()
+
+    with sub_forn:
+        st.write("### 🏢 Cadastro de Fornecedores")
+        with st.form("add_forn", clear_on_submit=True):
+            f1, f2, f3 = st.columns(3)
+            f_nome = f1.text_input("Nome Loja")
+            f_tel = f2.text_input("Contato")
+            f_cat = f3.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Acabamentos", "Outros"])
+            if st.form_submit_button("Salvar Fornecedor"):
+                supabase.table("fornecedores").insert({"nome": f_nome, "telefone": f_tel, "categoria": f_cat}).execute()
+                st.cache_data.clear(); st.rerun()
+        if not fornecedores_f.empty:
+            df_ef = st.data_editor(fornecedores_f[['id', 'nome', 'telefone', 'categoria']], key="ed_f", num_rows="dynamic", hide_index=True, use_container_width=True)
+            if st.button("Sincronizar Fornecedores"):
+                for _, r in df_ef.iterrows():
+                    if pd.notnull(r['id']): supabase.table("fornecedores").update({"nome": r['nome'], "telefone": r['telefone'], "categoria": r['categoria']}).eq("id", r['id']).execute()
+                    else: supabase.table("fornecedores").insert({"nome": r['nome'], "telefone": r['telefone'], "categoria": r['categoria']}).execute()
+                st.cache_data.clear(); st.rerun()
 
 # 8. ABA PRESTADORES
 with tabs[7]:
-    st.subheader("👷 Prestadores")
+    st.subheader("👷 Gestão de Profissionais")
     with st.form("add_pre", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        n_p = c1.text_input("Nome")
+        n_p = c1.text_input("Nome do Profissional")
         e_p = c2.text_input("Especialidade")
-        if st.form_submit_button("Salvar Prestador"):
+        if st.form_submit_button("Salvar Profissional"):
             supabase.table("prestadores").insert({"nome": n_p, "especialidade": e_p}).execute()
             st.cache_data.clear(); st.rerun()
     if not prestadores_f.empty:
-        st.data_editor(prestadores_f, hide_index=True, use_container_width=True)
+        st.data_editor(prestadores_f, key="ed_pre", hide_index=True, use_container_width=True)
