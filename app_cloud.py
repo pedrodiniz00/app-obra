@@ -89,12 +89,12 @@ if not st.session_state["password_correct"]:
 
 DB = carregar_tudo()
 
-# --- SIDEBAR (Com Correção de Variáveis) ---
+# --- SIDEBAR (Correção Definitiva) ---
 with st.sidebar:
     st.header("🏢 Obras")
     ver_arquivadas = st.checkbox("Ver Arquivadas")
     id_obra_atual = 0
-    nome_obra = "Nenhuma Obra Selecionada"
+    nome_obra = ""
     orc_p_db = 0.0
     orc_c_db = 0.0
 
@@ -104,6 +104,8 @@ with st.sidebar:
             opcoes = df_f.apply(lambda x: f"{x['id']} - {x['nome']}", axis=1).tolist()
             selecao = st.selectbox("Selecione a Obra:", opcoes)
             id_obra_atual = int(selecao.split(" - ")[0])
+            
+            # Puxa os dados reais do banco
             row_o = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
             nome_obra = row_o['nome']
             orc_p_db = float(row_o.get('orcamento_pedreiro', 0))
@@ -133,9 +135,10 @@ with st.sidebar:
                 st.cache_data.clear(); st.rerun()
 
 if id_obra_atual == 0:
-    st.info("👈 Selecione uma obra na barra lateral para começar.")
+    st.info("👈 Selecione uma obra na barra lateral para visualizar seus dados.")
     st.stop()
 
+# Carregamento dos dados filtrados
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual]
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual]
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual]
@@ -167,7 +170,7 @@ with tabs[0]:
         dt_in = st.date_input("Data", format="DD/MM/YYYY")
         if st.form_submit_button("Salvar"):
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
-            st.success("Lançamento salvo com sucesso!"); st.cache_data.clear()
+            st.success("Lançamento salvo!"); st.cache_data.clear()
 
 # 2. ABA CRONOGRAMA
 with tabs[1]:
@@ -255,7 +258,7 @@ with tabs[5]:
         nv_orc_p = c_orc2.number_input("Orçamento Pedreiro (R$)", value=orc_p_db, step=100.0, format="%.2f")
         if c_orc3.button("💾 Salvar Orçamentos"):
             supabase.table("obras").update({"orcamento_cliente": nv_orc_c, "orcamento_pedreiro": nv_orc_p}).eq("id", id_obra_atual).execute()
-            st.success("Orçamentos atualizados!"); st.cache_data.clear(); st.rerun()
+            st.cache_data.clear(); st.rerun()
     st.divider()
     p_m = custos_f[custos_f['etapa'] == "Mão de Obra"].copy()
     r_cl = custos_f[custos_f['etapa'] == "Entrada Cliente"].copy()
