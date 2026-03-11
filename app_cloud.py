@@ -49,7 +49,9 @@ def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").execute()
         return pd.DataFrame(response.data)
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao consultar {table_name}: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=2) 
 def carregar_tudo():
@@ -95,22 +97,23 @@ nome_obra = ""
 orc_p_db = 0.0
 orc_c_db = 0.0
 
-# --- SIDEBAR (CORRIGIDA PARA LISTAR OBRAS EXISTENTES) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🏢 Obras")
+    
+    # FERRAMENTA DE DIAGNÓSTICO (Caso as obras sumam)
+    if st.checkbox("🔍 Debug: Ver Banco Raw"):
+        st.write("Dados brutos encontrados na tabela obras:")
+        st.write(DB['obras'])
+
     ver_arquivadas = st.checkbox("Ver Arquivadas", value=False)
     
     if not DB['obras'].empty:
-        # Tratamento robusto para a coluna 'arquivada'
-        # Converte para booleano tratando Strings 'true'/'false' ou valores nulos
-        DB['obras']['arquivada'] = DB['obras']['arquivada'].apply(
-            lambda x: str(x).lower() in ['true', '1', 't']
-        )
-        
+        # Forçar tratamento da coluna arquivada
+        DB['obras']['arquivada'] = DB['obras']['arquivada'].apply(lambda x: str(x).lower() in ['true', '1', 't'])
         df_f = DB['obras'][DB['obras']['arquivada'] == ver_arquivadas]
         
         if not df_f.empty:
-            # Ordenar por ID para manter consistência
             df_f = df_f.sort_values(by='id', ascending=False)
             opcoes = df_f.apply(lambda x: f"{int(x['id'])} - {x['nome']}", axis=1).tolist()
             selecao = st.selectbox("Selecione a Obra:", opcoes)
@@ -133,9 +136,9 @@ with st.sidebar:
                 supabase.table("obras").update({"arquivada": not status_arq}).eq("id", id_obra_atual).execute()
                 st.cache_data.clear(); st.rerun()
         else:
-            st.info("Nenhuma obra encontrada nesta categoria.")
+            st.info("Nenhuma obra ativa encontrada.")
     else:
-        st.warning("⚠️ O banco de dados de obras está vazio.")
+        st.warning("⚠️ O banco de dados retornou zero registros para a tabela 'obras'.")
 
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
@@ -148,9 +151,9 @@ with st.sidebar:
                     supabase.table("cronograma").insert({"id_obra": new_id, "etapa": f"{item['pai']} | {item['sub']}", "porcentagem": 0}).execute()
                 st.cache_data.clear(); st.rerun()
 
-# --- TRAVA DE RENDERIZAÇÃO ---
+# --- TRAVA ---
 if id_obra_atual == 0:
-    st.info("👈 Por favor, selecione uma obra na barra lateral.")
+    st.info("👈 Por favor, selecione uma obra na barra lateral para carregar os dados.")
     st.stop()
 
 # --- DADOS FILTRADOS ---
@@ -241,7 +244,7 @@ with tabs[2]:
         nt, rp = c1.text_input("Tarefa"), c2.text_input("Resp")
         if st.form_submit_button("Add"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
-            st.success("Tarefa adicionada!"); st.cache_data.clear()
+            st.success("Adicionado!"); st.cache_data.clear()
     v_c = st.toggle("Ver Concluídas")
     df_v = tarefas_f[tarefas_f['status'] == ("Concluída" if v_c else "Pendente")]
     if not df_v.empty:
@@ -258,20 +261,20 @@ with tabs[3]:
 
 # 5. ABA DASHBOARD
 with tabs[4]:
-    st.subheader("📈 Resumo Financeiro")
+    st.subheader("📈 Dash")
     tg = custos_f['total'].sum() if not custos_f.empty else 0
-    c1, c2, c3 = st.columns(3); c1.metric("Orçado (Cliente)", formatar_moeda(orc_c_db)); c2.metric("Gasto Atual", formatar_moeda(tg)); c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
+    c1, c2, c3 = st.columns(3); c1.metric("Orçado", formatar_moeda(orc_c_db)); c2.metric("Gasto", formatar_moeda(tg)); c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
     if not custos_f.empty: st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
 # 6. ABA PAGAMENTOS
 with tabs[5]:
     st.subheader("💰 Pagamentos")
-    with st.expander("⚙️ Definir Orçamentos", expanded=False):
+    with st.expander("⚙️ Orçamentos", expanded=False):
         c_orc1, c_orc2, c_orc3 = st.columns([2, 2, 1])
-        nv_orc_c = c_orc1.number_input("Cliente (R$)", value=orc_c_db, format="%.2f")
-        nv_orc_p = c_orc2.number_input("Pedreiro (R$)", value=orc_p_db, format="%.2f")
+        nv_c = c_orc1.number_input("Cliente", value=orc_c_db, format="%.2f")
+        nv_p = c_orc2.number_input("Pedreiro", value=orc_p_db, format="%.2f")
         if c_orc3.button("💾 Salvar"):
-            supabase.table("obras").update({"orcamento_cliente": nv_orc_c, "orcamento_pedreiro": nv_orc_p}).eq("id", id_obra_atual).execute()
+            supabase.table("obras").update({"orcamento_cliente": nv_c, "orcamento_pedreiro": nv_p}).eq("id", id_obra_atual).execute()
             st.cache_data.clear(); st.rerun()
     st.divider()
     p_m = custos_f[custos_f['etapa'] == "Mão de Obra"].copy()
@@ -282,12 +285,8 @@ with tabs[5]:
     res3.metric("A Pagar", formatar_moeda(orc_p_db - p_m['total'].sum()))
     res4.metric("Saldo Cliente", formatar_moeda(orc_c_db - r_cl['total'].sum()))
     with st.form("f_p", clear_on_submit=True):
-        cp1, cp2, cp3, cp4 = st.columns(4)
-        tp = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
-        p_sel = cp2.selectbox("Quem?", prestadores_f['nome'].tolist()) if tp == "Saída (Pedreiro)" else ""
-        v_l = cp3.number_input("R$", 0.0, format="%.2f")
-        d_l = cp4.date_input("Data", format="DD/MM/YYYY")
-        if st.form_submit_button("Lançar Pagamento"):
+        cp1, cp2, cp3, cp4 = st.columns(4); tp = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"]); p_sel = cp2.selectbox("Quem?", prestadores_f['nome'].tolist()) if tp == "Saída (Pedreiro)" else ""; v_l = cp3.number_input("R$", 0.0); d_l = cp4.date_input("Data")
+        if st.form_submit_button("Lançar"):
             desc_l = f"Pgto: {p_sel}" if tp == "Saída (Pedreiro)" else tp
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc_l, "valor": v_l, "total": v_l, "etapa": "Mão de Obra" if "Saída" in tp else "Entrada Cliente", "data": str(d_l)}).execute()
             st.success("Lançado!"); st.cache_data.clear()
@@ -302,40 +301,25 @@ with tabs[5]:
                 if pd.notnull(r['id']): supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
         st.cache_data.clear(); st.rerun()
 
-# 7. ABA CADASTRO
+# 7-8. CADASTROS E PRESTADORES
 with tabs[6]:
-    st.subheader("📦 Cadastros")
     s_m, s_f = st.tabs(["Materiais", "Fornecedores"])
     with s_m:
         with st.form("a_m"):
             nm = st.text_input("Material")
             if st.form_submit_button("Salvar Material"):
                 supabase.table("materiais").insert({"nome": nm}).execute(); st.cache_data.clear()
-        if not DB['materiais'].empty:
-            df_m_e = st.data_editor(DB['materiais'][['id', 'nome']], key="em", num_rows="dynamic", hide_index=True, use_container_width=True)
-            if st.button("Sincronizar Materiais"):
-                for _, r in df_m_e.iterrows():
-                    if pd.notnull(r['id']): supabase.table("materiais").update({"nome": r['nome']}).eq("id", r['id']).execute()
-                    else: supabase.table("materiais").insert({"nome": r['nome']}).execute()
-                st.cache_data.clear(); st.rerun()
+        if not DB['materiais'].empty: st.data_editor(DB['materiais'][['id', 'nome']], key="em", hide_index=True, use_container_width=True)
     with s_f:
         with st.form("a_f"):
-            f1, f2, f3 = st.columns(3); fn, ft, fc = f1.text_input("Loja"), f2.text_input("Fone"), f3.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Acabamentos", "Outros"])
+            f1, f2 = st.columns(2); fn, ft = f1.text_input("Loja"), f2.text_input("Fone")
             if st.form_submit_button("Salvar Fornecedor"):
-                supabase.table("fornecedores").insert({"nome": fn, "telefone": ft, "categoria": fc}).execute(); st.cache_data.clear()
-        if not fornecedores_f.empty:
-            df_f_e = st.data_editor(fornecedores_f[['id', 'nome', 'telefone', 'categoria']], key="efo", num_rows="dynamic", hide_index=True, use_container_width=True)
-            if st.button("Sincronizar Fornecedores"):
-                for _, r in df_f_e.iterrows():
-                    if pd.notnull(r['id']): supabase.table("fornecedores").update({"nome": r['nome'], "telefone": r['telefone'], "categoria": r['categoria']}).eq("id", r['id']).execute()
-                    else: supabase.table("fornecedores").insert({"nome": r['nome'], "telefone": r['telefone'], "categoria": r['categoria']}).execute()
-                st.cache_data.clear(); st.rerun()
+                supabase.table("fornecedores").insert({"nome": fn, "telefone": ft}).execute(); st.cache_data.clear()
+        if not fornecedores_f.empty: st.data_editor(fornecedores_f, key="efo", hide_index=True, use_container_width=True)
 
-# 8. ABA PRESTADORES
 with tabs[7]:
-    st.subheader("👷 Prestadores")
     with st.form("a_p"):
         c1, c2 = st.columns(2); np, ep = c1.text_input("Nome"), c2.text_input("Especialidade")
-        if st.form_submit_button("Cadastrar"):
+        if st.form_submit_button("Salvar"):
             supabase.table("prestadores").insert({"nome": np, "especialidade": ep}).execute(); st.cache_data.clear()
     if not prestadores_f.empty: st.data_editor(prestadores_f, key="epre", hide_index=True, use_container_width=True)
