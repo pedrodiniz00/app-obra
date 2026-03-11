@@ -173,33 +173,69 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# 2. ABA CRONOGRAMA (ATUALIZADA)
+# 2. ABA CRONOGRAMA (COM PESOS E CÁLCULO DE PROGRESSO TOTAL)
 with tabs[1]:
-    st.subheader("📅 Cronograma")
+    st.subheader("📅 Cronograma e Progresso Real")
+    
+    if not crono_f.empty:
+        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
+        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
+        
+        # Agrupar médias por etapa pai
+        resumo_etapas = crono_f.groupby('pai')['porcentagem'].mean().reset_index()
+        
+        with st.expander("⚖️ Configurar Pesos das Etapas (Soma deve ser 100%)", expanded=True):
+            cols_p = st.columns(len(resumo_etapas))
+            pesos_dict = {}
+            soma_pesos = 0
+            for i, r_pai in resumo_etapas.iterrows():
+                # Define o peso de cada etapa pai no total da obra
+                peso = cols_p[i].number_input(f"{r_pai['pai']}", 0, 100, 10, key=f"peso_v_{r_pai['pai']}")
+                pesos_dict[r_pai['pai']] = peso
+                soma_pesos += peso
+            
+            if soma_pesos != 100:
+                st.warning(f"⚠️ Atenção: A soma atual é {soma_pesos}%. Ajuste para 100%.")
+
+        # Cálculo do Progresso Geral
+        progresso_total_obra = 0
+        for pai_nome, media_perc in resumo_etapas.values:
+            p_peso = pesos_dict.get(pai_nome, 0)
+            progresso_total_obra += (media_perc / 100) * p_peso
+        
+        st.divider()
+        c_met1, c_met2 = st.columns([1, 3])
+        c_met1.metric("🏗️ TOTAL DA OBRA", f"{progresso_total_obra:.2f}%")
+        c_met2.progress(progresso_total_obra / 100 if progresso_total_obra <= 100 else 1.0)
+    
+    st.divider()
+    
     with st.expander("📁 Criar Nova Pasta"):
         n_p = st.text_input("Nome da Pasta (Ex: 9. Gesso)")
         if st.button("Criar"):
             if n_p:
                 supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{n_p} | Início", "porcentagem": 0}).execute()
                 st.cache_data.clear(); st.rerun()
-    st.divider()
+    
     if not crono_f.empty:
-        crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
-        crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
         for i, pai in enumerate(sorted(crono_f['pai'].unique()), 1):
+            media_da_pasta = resumo_etapas[resumo_etapas['pai'] == pai]['porcentagem'].values[0]
+            
             c_f, c_e, c_d = st.columns([6, 1, 1])
-            with c_f: exp = st.expander(f"📁 {pai}")
+            with c_f: exp = st.expander(f"📁 {pai} — Concluído: {media_da_pasta:.1f}%")
             with c_e:
                 with st.popover("✏️"):
                     nv = st.text_input("Renomear Pasta", value=pai, key=f"ep_{i}")
                     if st.button("OK", key=f"bp_{i}"):
                         for _, r in crono_f[crono_f['pai'] == pai].iterrows():
-                            supabase.table("cronograma").update({"etapa": f"{nv} | {r['sub']}"}).eq("id", r['id']).execute()
+                            sub_n = r['etapa'].split(' | ')[1] if ' | ' in r['etapa'] else ""
+                            supabase.table("cronograma").update({"etapa": f"{nv} | {sub_n}"}).eq("id", r['id']).execute()
                         st.cache_data.clear(); st.rerun()
             with c_d:
                 if st.button("🗑️", key=f"dp_{i}"):
                     supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
                     st.cache_data.clear(); st.rerun()
+            
             with exp:
                 with st.popover("➕ Add Atividade"):
                     ns = st.text_input("Atividade", key=f"ns_{i}")
@@ -208,42 +244,22 @@ with tabs[1]:
                         st.cache_data.clear(); st.rerun()
                 st.divider()
                 
-                # Renderização das atividades
                 for j, (_, row) in enumerate(crono_f[crono_f['pai'] == pai].sort_values(by='sub').iterrows(), 1):
                     with st.container(border=True):
-                        # Layout ajustado: Maior espaço para o nome (c2) e entrada manual de % (c3)
                         c1, c2, c3, c4, c5 = st.columns([0.4, 5.0, 1.2, 0.7, 0.7])
-                        
                         c1.write(f"**{i}.{j}**")
-                        
-                        # Nome da atividade ampliado
-                        nv_at = c2.text_input(
-                            "Atividade", 
-                            value=row['sub'], 
-                            key=f"n_{row['id']}", 
-                            label_visibility="collapsed"
-                        )
-                        
-                        # Porcentagem digitada manualmente
-                        nv_prog = c3.number_input(
-                            "%", 
-                            min_value=0, 
-                            max_value=100, 
-                            value=int(row['porcentagem']), 
-                            key=f"p_{row['id']}", 
-                            label_visibility="collapsed"
-                        )
-                        
-                        # Botões de ação
-                        if c4.button("💾", key=f"s_{row['id']}", help="Salvar Alteração"):
+                        nv_at = c2.text_input("Atividade", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
+                        nv_prog = c3.number_input("%", 0, 100, int(row['porcentagem']), key=f"p_{row['id']}", label_visibility="collapsed")
+                        if c4.button("💾", key=f"s_{row['id']}"):
                             supabase.table("cronograma").update({"etapa": f"{pai} | {nv_at}", "porcentagem": nv_prog}).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
-                        
-                        if c5.button("🗑️", key=f"d_{row['id']}", help="Excluir Atividade"):
+                        if c5.button("🗑️", key=f"d_{row['id']}"):
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
 
-# --- DEMAIS ABAS (PAGAMENTOS, TAREFAS, ETC) MANTIDAS INTEGRALMENTE ---
+# --- DEMAIS ABAS MANTIDAS INTEGRALMENTE ---
+
+# 3. ABA TAREFAS
 with tabs[2]:
     st.subheader("📋 Tarefas")
     with st.form("f_t", clear_on_submit=True):
@@ -251,7 +267,7 @@ with tabs[2]:
         nt, rp = c1.text_input("Tarefa"), c2.text_input("Resp")
         if st.form_submit_button("Add"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
-            st.success("Tarefa adicionada!"); st.cache_data.clear()
+            st.success("Adicionado!"); st.cache_data.clear()
     v_c = st.toggle("Ver Concluídas")
     df_v = tarefas_f[tarefas_f['status'] == ("Concluída" if v_c else "Pendente")]
     if not df_v.empty:
@@ -261,26 +277,28 @@ with tabs[2]:
                 supabase.table("tarefas").update({"descricao": r['descricao'], "responsavel": r['responsavel'], "status": r['status']}).eq("id", r['id']).execute()
             st.cache_data.clear(); st.rerun()
 
+# 4. ABA HISTÓRICO
 with tabs[3]:
-    st.subheader("📊 Histórico de Custos")
-    st.dataframe(custos_f[['data', 'descricao', 'fornecedor', 'total', 'etapa']], use_container_width=True, 
-                 column_config={"total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"), "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY")})
+    st.subheader("📊 Histórico")
+    st.dataframe(custos_f[['data', 'descricao', 'fornecedor', 'total', 'etapa']], use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f"), "data": st.column_config.DateColumn(format="DD/MM/YYYY")})
 
+# 5. ABA DASHBOARD
 with tabs[4]:
-    st.subheader("📈 Resumo Financeiro")
+    st.subheader("📈 Dash")
     tg = custos_f['total'].sum() if not custos_f.empty else 0
-    c1, c2, c3 = st.columns(3); c1.metric("Orçado (Cliente)", formatar_moeda(orc_c_db)); c2.metric("Gasto Atual", formatar_moeda(tg)); c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
+    c1, c2, c3 = st.columns(3); c1.metric("Orçado", formatar_moeda(orc_c_db)); c2.metric("Gasto", formatar_moeda(tg)); c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
     if not custos_f.empty: st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
+# 6. ABA PAGAMENTOS
 with tabs[5]:
     st.subheader("💰 Pagamentos")
     with st.expander("⚙️ Definir Orçamentos", expanded=False):
         c_orc1, c_orc2, c_orc3 = st.columns([2, 2, 1])
-        nv_orc_c = c_orc1.number_input("Orçamento Cliente (R$)", value=orc_c_db, step=100.0, format="%.2f")
-        nv_orc_p = c_orc2.number_input("Orçamento Pedreiro (R$)", value=orc_p_db, step=100.0, format="%.2f")
-        if c_orc3.button("💾 Salvar Orçamentos"):
-            supabase.table("obras").update({"orcamento_cliente": nv_orc_c, "orcamento_pedreiro": nv_orc_p}).eq("id", id_obra_atual).execute()
-            st.success("Orçamentos atualizados!"); st.cache_data.clear(); st.rerun()
+        nv_c = c_orc1.number_input("Cliente", value=orc_c_db, format="%.2f")
+        nv_p = c_orc2.number_input("Pedreiro", value=orc_p_db, format="%.2f")
+        if c_orc3.button("💾 Salvar"):
+            supabase.table("obras").update({"orcamento_cliente": nv_c, "orcamento_pedreiro": nv_p}).eq("id", id_obra_atual).execute()
+            st.cache_data.clear(); st.rerun()
     st.divider()
     p_m, r_cl = custos_f[custos_f['etapa'] == "Mão de Obra"].copy(), custos_f[custos_f['etapa'] == "Entrada Cliente"].copy()
     res1, res2, res3, res4 = st.columns(4)
@@ -292,9 +310,9 @@ with tabs[5]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc_l, "valor": v_l, "total": v_l, "etapa": "Mão de Obra" if "Saída" in tp else "Entrada Cliente", "data": str(d_l)}).execute()
             st.success("Lançado!"); st.cache_data.clear()
     c_s, c_e = st.columns(2)
-    with c_s: st.error("🔴 Saídas"); p_m_edit = st.data_editor(p_m[['id', 'data', 'descricao', 'total']], key="eds", hide_index=True, num_rows="dynamic", use_container_width=True, column_config={"total": st.column_config.NumberColumn("R$", format="R$ %.2f")})
-    with c_e: st.success("🟢 Entradas"); r_cl_edit = st.data_editor(r_cl[['id', 'data', 'descricao', 'total']], key="ede", hide_index=True, num_rows="dynamic", use_container_width=True, column_config={"total": st.column_config.NumberColumn("R$", format="R$ %.2f")})
-    if st.button("💾 Sincronizar Pagamentos"):
+    with c_s: st.error("🔴 Saídas"); p_m_edit = st.data_editor(p_m[['id', 'data', 'descricao', 'total']], key="eds", hide_index=True, num_rows="dynamic", use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
+    with c_e: st.success("🟢 Entradas"); r_cl_edit = st.data_editor(r_cl[['id', 'data', 'descricao', 'total']], key="ede", hide_index=True, num_rows="dynamic", use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
+    if st.button("💾 Sincronizar"):
         for d in [(p_m, p_m_edit), (r_cl, r_cl_edit)]:
             orig, edit = d; ids_o, ids_e = set(orig['id'].tolist()), set(edit['id'].dropna().tolist())
             for d_id in (ids_o - ids_e): supabase.table("custos").delete().eq("id", d_id).execute()
@@ -302,6 +320,7 @@ with tabs[5]:
                 if pd.notnull(r['id']): supabase.table("custos").update({"data": str(r['data']), "descricao": r['descricao'], "total": r['total']}).eq("id", r['id']).execute()
         st.cache_data.clear(); st.rerun()
 
+# 7-8. CADASTROS E PRESTADORES
 with tabs[6]:
     s_m, s_f = st.tabs(["Materiais", "Fornecedores"])
     with s_m:
