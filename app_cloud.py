@@ -160,7 +160,7 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# # 2. ABA CRONOGRAMA (ESTRUTURA COMPLETA COM PERSISTÊNCIA DE EXPANDERS)
+# 2. ABA CRONOGRAMA (ESTRUTURA COMPLETA COM ADIÇÃO DE SUBETAPAS INTERNAS)
 with tabs[1]:
     st.subheader("📅 Cronograma: Pesos Hierárquicos e Progresso Real")
     
@@ -212,9 +212,9 @@ with tabs[1]:
             progresso_geral_obra += (conclusao_etapa_pai * (pesos_pai[pai] / 100))
             status_soma_sub = f"✅ 100%" if soma_pesos_sub == 100 else f"⚠️ Soma: {int(soma_pesos_sub)}%"
             
-            # Expander vinculado ao session_state para não fechar no rerun
+            # Expander vinculado ao session_state para não fechar
             with st.expander(f"📁 {pai} — Concluído: {conclusao_etapa_pai*100:.1f}% | {status_soma_sub}", expanded=st.session_state[exp_key]):
-                # Se o usuário interagiu com a aba, garantimos que ela conste como aberta no próximo ciclo
+                # Se o usuário abriu ou interagiu, mantemos True
                 st.session_state[exp_key] = True 
                 
                 for j, (_, row) in enumerate(subset.iterrows(), 1):
@@ -224,7 +224,6 @@ with tabs[1]:
                         nv_sub = r1c2.text_input("Atividade", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
                         
                         if r1c3.button("💾", key=f"s_{row['id']}"):
-                            # Força a manutenção do estado aberto no salvamento
                             st.session_state[exp_key] = True
                             supabase.table("cronograma").update({
                                 "etapa": f"{pai} | {nv_sub}", 
@@ -246,14 +245,30 @@ with tabs[1]:
                         impacto_total = (nv_e / 100) * (nv_p / 100 if soma_pesos_sub > 0 else 0) * (pesos_pai[pai] / 100)
                         r2c4.write(f"Impacto no Geral: **{impacto_total*100:.2f}%**")
 
-        # --- BARRA DE PROGRESSO FINAL ---
+                # --- NOVA OPÇÃO: ADICIONAR SUBETAPA DENTRO DA PASTA ---
+                st.markdown("---")
+                with st.popover(f"➕ Adicionar Subetapa em {pai}"):
+                    nova_sub_nome = st.text_input("Nome da nova Atividade", key=f"new_sub_txt_{i}")
+                    if st.button("Confirmar Adição", key=f"btn_new_sub_{i}"):
+                        if nova_sub_nome:
+                            st.session_state[exp_key] = True
+                            supabase.table("cronograma").insert({
+                                "id_obra": id_obra_atual, 
+                                "etapa": f"{pai} | {nova_sub_nome}", 
+                                "porcentagem": 0, 
+                                "planejada": 0
+                            }).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+
+        # --- PROGRESSO FINAL DA OBRA ---
         st.divider()
         c_met1, c_met2 = st.columns([1, 3])
         c_met1.metric("🏗️ TOTAL DA OBRA", f"{progresso_geral_obra*100:.2f}%")
         c_met2.progress(min(progresso_geral_obra, 1.0))
         
-        with st.popover("📁 Criar Nova Pasta"):
-            n_pasta = st.text_input("Nome da Pasta")
+        with st.popover("📁 Criar Nova Pasta Principal"):
+            n_pasta = st.text_input("Nome da Pasta (ex: 9. Pintura)")
             if st.button("Criar"):
                 if n_pasta:
                     supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{n_pasta} | Início", "porcentagem": 0, "planejada": 100}).execute()
