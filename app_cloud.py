@@ -160,75 +160,74 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# # 2. ABA CRONOGRAMA (CORREÇÃO: ALIMENTAÇÃO DINÂMICA DA ETAPA PAI)
+# # 2. ABA CRONOGRAMA (ESTRUTURA COMPLETA COM PESOS HIERÁRQUICOS E SOMAS)
 with tabs[1]:
-    st.subheader("📅 Cronograma: Pesos Hierárquicos")
+    st.subheader("📅 Cronograma: Pesos Hierárquicos e Progresso Real")
+    
     if not crono_f.empty:
+        # Organização de dados: Separa Etapa Pai e Subetapa
         crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
         etapas_uniques = sorted(crono_f['pai'].unique())
         
-        # 1. Pesos das Etapas Pai (Soma para 100% da Obra)
+        # --- PASSO 1: PESOS DAS ETAPAS PAI (SOMA PARA 100% DA OBRA) ---
+        st.markdown("### 🏗️ 1. Pesos das Etapas Pai")
+        st.caption("Defina quanto cada pasta vale no total de 100% da obra.")
+        
+        cols_pai = st.columns(len(etapas_uniques))
         pesos_pai = {}
         soma_total_pai = 0
-        st.write("**Pesos das Etapas Pai (Impacto no Total da Obra):**")
-        cols_pai = st.columns(len(etapas_uniques))
+        
         for idx, pai in enumerate(etapas_uniques):
+            # Busca o peso da etapa pai (wp_nome_da_etapa)
             pesos_pai[pai] = cols_pai[idx].number_input(f"{pai} (%)", 0, 100, 10, key=f"wp_{pai}")
             soma_total_pai += pesos_pai[pai]
         
+        # Alerta de Soma Global (Topo)
         if soma_total_pai != 100:
-            st.warning(f"⚠️ Soma das Etapas Pai: **{soma_total_pai}%** (Ajuste para 100%)")
+            st.warning(f"⚠️ A soma das Etapas Pai está em **{soma_total_pai}%**. Ajuste para fechar em 100%.")
         else:
-            st.success(f"✅ Soma das Etapas Pai: **100%**")
+            st.success(f"✅ Soma das Etapas Pai: 100% (Obra Equilibrada)")
         
         progresso_geral_obra = 0
         st.divider()
+
+        # --- PASSO 2: SUBETAPAS E CÁLCULO DINÂMICO ---
+        st.markdown("### 📁 2. Detalhamento por Etapa")
         
-        # --- DENTRO DO LOOP DAS ETAPAS PAI (Aba 2) ---
-for i, pai in enumerate(etapas_uniques, 1):
-    subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
-    
-    # Esta linha calcula a soma real vinda do banco/sessão
-    soma_pesos_sub = sum(st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada']) for _, sub_r in subset.iterrows())
-    
-    # Cálculo do progresso interno da pasta
-    prog_pai = sum((st.session_state.get(f"ei_{r['id']}", r['porcentagem'])/100) * (st.session_state.get(f"pi_{r['id']}", r['planejada'])/soma_pesos_sub) 
-                   for _, r in subset.iterrows()) if soma_pesos_sub > 0 else 0
-    
-    # Indicador visual no título da pasta
-    status_soma = f"✅ 100%" if soma_pesos_sub == 100 else f"⚠️ Soma: {int(soma_pesos_sub)}%"
-    
-    with st.expander(f"📁 {pai} — Concluído: {prog_pai*100:.1f}% | {status_soma}"):
-        # ... (restante dos campos de input)
+        for i, pai in enumerate(etapas_uniques, 1):
+            subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
             
-            # --- CÁLCULO DINÂMICO QUE ALIMENTA A ETAPA PAI ---
-            # Soma dos pesos (planejado) das subetapas desta pasta
-            soma_pesos_sub = subset['planejada'].sum()
+            # Cálculo da soma de pesos (planejada) das subetapas desta pasta
+            # Prioriza o que está na tela (session_state) para atualizar o cabeçalho na hora
+            soma_pesos_sub = sum(st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada']) for _, sub_r in subset.iterrows())
             
             # Cálculo da porcentagem concluída DESTA etapa pai (0 a 100%)
-            # Soma de (Execução da Sub * Peso da Sub na Pasta / Soma Total dos Pesos da Pasta)
             conclusao_etapa_pai = 0
             if soma_pesos_sub > 0:
                 for _, sub_r in subset.iterrows():
-                    # Usamos o valor do session_state se existir, senão o do banco
                     v_exec = st.session_state.get(f"ei_{sub_r['id']}", sub_r['porcentagem'])
                     v_peso_sub = st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada'])
+                    # Contribuição da sub na pasta: (Execução/100) * (Peso da Sub / Soma Total da Pasta)
                     conclusao_etapa_pai += (v_exec / 100) * (v_peso_sub / soma_pesos_sub)
             
-            # Acúmulo no progresso total da obra
+            # Alimenta o progresso geral da obra (ponderado pelo peso da etapa pai)
             progresso_geral_obra += (conclusao_etapa_pai * (pesos_pai[pai] / 100))
             
-            # Indicador visual no Expander
-            status_soma_sub = f"⚠️ {int(soma_pesos_sub)}%" if soma_pesos_sub != 100 else "✅ 100%"
-            with st.expander(f"📁 {pai} — Concluído: {conclusao_etapa_pai*100:.1f}% | Peso: {status_soma_sub}"):
+            # Indicador visual no título do Expander
+            status_soma_sub = f"✅ 100%" if soma_pesos_sub == 100 else f"⚠️ Soma: {int(soma_pesos_sub)}%"
+            
+            with st.expander(f"📁 {pai} — Concluído: {conclusao_etapa_pai*100:.1f}% | {status_soma_sub}"):
+                st.caption(f"Defina o peso de cada atividade em relação à etapa {pai}.")
+                
                 for j, (_, row) in enumerate(subset.iterrows(), 1):
                     with st.container(border=True):
+                        # Linha 1: Descrição e Ações
                         r1c1, r1c2, r1c3, r1c4 = st.columns([0.4, 8.0, 0.7, 0.7])
                         r1c1.write(f"**{i}.{j}**")
                         nv_sub = r1c2.text_input("Atividade", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
                         
-                        if r1c3.button("💾", key=f"s_{row['id']}"):
+                        if r1c3.button("💾", key=f"s_{row['id']}", help="Salvar Alterações"):
                             supabase.table("cronograma").update({
                                 "etapa": f"{pai} | {nv_sub}", 
                                 "planejada": st.session_state[f"pi_{row['id']}"], 
@@ -236,21 +235,34 @@ for i, pai in enumerate(etapas_uniques, 1):
                             }).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         
-                        if r1c4.button("🗑️", key=f"d_{row['id']}"):
+                        if r1c4.button("🗑️", key=f"d_{row['id']}", help="Excluir Subetapa"):
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         
+                        # Linha 2: Inputs de Peso e Execução
                         r2c1, r2c2, r2c3, r2c4 = st.columns([0.4, 3.0, 3.0, 4.0])
-                        # Peso da subetapa (P%) e Execução (E%)
+                        # Peso (pi_) e Executado (ei_)
                         nv_p = r2c2.number_input("Peso na Etapa (%)", 0, 100, int(row.get('planejada', 0)), key=f"pi_{row['id']}")
                         nv_e = r2c3.number_input("Executado (%)", 0, 100, int(row['porcentagem']), key=f"ei_{row['id']}")
                         
+                        # Cálculo do impacto real desta subetapa no 100% total da obra
                         impacto_total = (nv_e / 100) * (nv_p / 100 if soma_pesos_sub > 0 else 0) * (pesos_pai[pai] / 100)
-                        r2c4.write(f"Contribuição no Total: **{impacto_total*100:.2f}%**")
-        
+                        r2c4.write(f"Impacto no Progresso Geral: **{impacto_total*100:.2f}%**")
+
+        # --- PROGRESSO FINAL DA OBRA ---
         st.divider()
-        st.metric("🏗️ PROGRESSO REAL DA OBRA (TOTAL)", f"{progresso_geral_obra*100:.2f}%")
-        st.progress(min(progresso_geral_obra, 1.0))
+        c_met1, c_met2 = st.columns([1, 3])
+        c_met1.metric("🏗️ TOTAL DA OBRA", f"{progresso_geral_obra*100:.2f}%")
+        c_met2.markdown("### Barra de Progresso Real")
+        c_met2.progress(min(progresso_geral_obra, 1.0))
+        
+        # Botão para adicionar novas pastas
+        with st.popover("📁 Criar Nova Pasta"):
+            n_pasta = st.text_input("Nome da Pasta (Ex: 9. Pintura)")
+            if st.button("Criar"):
+                if n_pasta:
+                    supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{n_pasta} | Início", "porcentagem": 0, "planejada": 100}).execute()
+                    st.cache_data.clear(); st.rerun()
 # 3. ABA TAREFAS
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
