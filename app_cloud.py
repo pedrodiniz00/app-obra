@@ -89,32 +89,38 @@ if not st.session_state["password_correct"]:
 
 DB = carregar_tudo()
 
-# --- INICIALIZAÇÃO DE VARIÁVEIS DE SEGURANÇA ---
+# --- VARIÁVEIS DE SEGURANÇA ---
 id_obra_atual = 0
 nome_obra = ""
 orc_p_db = 0.0
 orc_c_db = 0.0
 
-# --- SIDEBAR ---
+# --- SIDEBAR (CORRIGIDA PARA LISTAR OBRAS EXISTENTES) ---
 with st.sidebar:
     st.header("🏢 Obras")
-    ver_arquivadas = st.checkbox("Ver Arquivadas")
+    ver_arquivadas = st.checkbox("Ver Arquivadas", value=False)
     
     if not DB['obras'].empty:
-        DB['obras']['arquivada'] = DB['obras']['arquivada'].fillna(False).astype(bool)
+        # Tratamento robusto para a coluna 'arquivada'
+        # Converte para booleano tratando Strings 'true'/'false' ou valores nulos
+        DB['obras']['arquivada'] = DB['obras']['arquivada'].apply(
+            lambda x: str(x).lower() in ['true', '1', 't']
+        )
+        
         df_f = DB['obras'][DB['obras']['arquivada'] == ver_arquivadas]
         
         if not df_f.empty:
+            # Ordenar por ID para manter consistência
+            df_f = df_f.sort_values(by='id', ascending=False)
             opcoes = df_f.apply(lambda x: f"{int(x['id'])} - {x['nome']}", axis=1).tolist()
             selecao = st.selectbox("Selecione a Obra:", opcoes)
             id_obra_atual = int(selecao.split(" - ")[0])
             
-            # ATRIBUIÇÃO DAS VARIÁVEIS
             row_o = DB['obras'][DB['obras']['id'] == id_obra_atual].iloc[0]
             nome_obra = row_o['nome']
             orc_p_db = float(row_o.get('orcamento_pedreiro', 0) or 0)
             orc_c_db = float(row_o.get('orcamento_cliente', 0) or 0)
-            status_arq = bool(row_o.get('arquivada', False))
+            status_arq = row_o['arquivada']
 
             with st.popover("✏️ Editar Nome"):
                 nv_nome = st.text_input("Nome", value=nome_obra)
@@ -126,6 +132,10 @@ with st.sidebar:
             if st.button(txt_b):
                 supabase.table("obras").update({"arquivada": not status_arq}).eq("id", id_obra_atual).execute()
                 st.cache_data.clear(); st.rerun()
+        else:
+            st.info("Nenhuma obra encontrada nesta categoria.")
+    else:
+        st.warning("⚠️ O banco de dados de obras está vazio.")
 
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
@@ -138,9 +148,9 @@ with st.sidebar:
                     supabase.table("cronograma").insert({"id_obra": new_id, "etapa": f"{item['pai']} | {item['sub']}", "porcentagem": 0}).execute()
                 st.cache_data.clear(); st.rerun()
 
-# --- BLOQUEIO DE RENDERIZAÇÃO SE NÃO HOUVER OBRA ---
+# --- TRAVA DE RENDERIZAÇÃO ---
 if id_obra_atual == 0:
-    st.info("👈 Por favor, selecione uma obra na barra lateral para visualizar os lançamentos.")
+    st.info("👈 Por favor, selecione uma obra na barra lateral.")
     st.stop()
 
 # --- DADOS FILTRADOS ---
@@ -231,7 +241,7 @@ with tabs[2]:
         nt, rp = c1.text_input("Tarefa"), c2.text_input("Resp")
         if st.form_submit_button("Add"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
-            st.success("Adicionado!"); st.cache_data.clear()
+            st.success("Tarefa adicionada!"); st.cache_data.clear()
     v_c = st.toggle("Ver Concluídas")
     df_v = tarefas_f[tarefas_f['status'] == ("Concluída" if v_c else "Pendente")]
     if not df_v.empty:
