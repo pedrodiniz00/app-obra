@@ -185,8 +185,22 @@ with tabs[1]:
         progresso_geral_obra = 0
         st.divider()
         
-        for i, pai in enumerate(etapas_uniques, 1):
-            subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
+        # --- DENTRO DO LOOP DAS ETAPAS PAI (Aba 2) ---
+for i, pai in enumerate(etapas_uniques, 1):
+    subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
+    
+    # Esta linha calcula a soma real vinda do banco/sessão
+    soma_pesos_sub = sum(st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada']) for _, sub_r in subset.iterrows())
+    
+    # Cálculo do progresso interno da pasta
+    prog_pai = sum((st.session_state.get(f"ei_{r['id']}", r['porcentagem'])/100) * (st.session_state.get(f"pi_{r['id']}", r['planejada'])/soma_pesos_sub) 
+                   for _, r in subset.iterrows()) if soma_pesos_sub > 0 else 0
+    
+    # Indicador visual no título da pasta
+    status_soma = f"✅ 100%" if soma_pesos_sub == 100 else f"⚠️ Soma: {int(soma_pesos_sub)}%"
+    
+    with st.expander(f"📁 {pai} — Concluído: {prog_pai*100:.1f}% | {status_soma}"):
+        # ... (restante dos campos de input)
             
             # --- CÁLCULO DINÂMICO QUE ALIMENTA A ETAPA PAI ---
             # Soma dos pesos (planejado) das subetapas desta pasta
