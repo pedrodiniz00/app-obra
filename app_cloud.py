@@ -160,7 +160,7 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# 2. ABA CRONOGRAMA (ESTRUTURA INTEGRAL COM PERSISTÊNCIA EM BANCO)
+# 2. ABA CRONOGRAMA (ESTRUTURA INTEGRAL COM BOTÃO DE SALVAR PESOS PAI)
 with tabs[1]:
     st.subheader("📅 Cronograma: Pesos Hierárquicos e Progresso Real")
     
@@ -169,20 +169,27 @@ with tabs[1]:
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
         etapas_uniques = sorted(crono_f['pai'].unique())
         
-        # --- PASSO 1: PESOS DAS ETAPAS PAI (AGORA PERSISTENTE) ---
+        # --- PASSO 1: PESOS DAS ETAPAS PAI ---
         st.markdown("### 🏗️ 1. Pesos das Etapas Pai")
         cols_pai = st.columns(len(etapas_uniques))
         pesos_pai = {}
         soma_total_pai = 0
         
         for idx, pai in enumerate(etapas_uniques):
-            # Tenta buscar o peso da Etapa Pai no banco (usando a primeira subetapa como referência de armazenamento)
-            # Se não existir no banco, assume 10 como padrão
-            subset_pai = crono_f[crono_f['pai'] == pai]
-            peso_banco = float(subset_pai['planejada_pai'].iloc[0]) if 'planejada_pai' in subset_pai.columns and not subset_pai.empty else 10.0
+            # Busca o peso persistido no banco (coluna planejada_pai)
+            subset_pai_ref = crono_f[crono_f['pai'] == pai]
+            peso_banco = float(subset_pai_ref['planejada_pai'].iloc[0]) if 'planejada_pai' in subset_pai_ref.columns and not subset_pai_ref.empty and subset_pai_ref['planejada_pai'].iloc[0] is not None else 10.0
             
             pesos_pai[pai] = cols_pai[idx].number_input(f"{pai} (%)", 0, 100, int(peso_banco), key=f"wp_{pai}")
             soma_total_pai += pesos_pai[pai]
+        
+        # BOTÃO PARA SALVAR PESOS DAS ETAPAS PAI NO BANCO
+        if st.button("💾 Salvar Pesos das Etapas", use_container_width=True):
+            for p_nome, p_valor in pesos_pai.items():
+                supabase.table("cronograma").update({"planejada_pai": p_valor}).eq("id_obra", id_obra_atual).ilike("etapa", f"{p_nome}%").execute()
+            st.cache_data.clear()
+            st.success("Pesos das etapas pai salvos com sucesso!")
+            st.rerun()
         
         if soma_total_pai != 100:
             st.warning(f"⚠️ Soma das Etapas Pai: **{soma_total_pai}%**. Ajuste para 100%.")
@@ -232,17 +239,12 @@ with tabs[1]:
                         
                         if r1c3.button("💾", key=f"s_{row['id']}"):
                             st.session_state[exp_key] = True
-                            # SALVA TUDO: Nome da Sub, Peso da Sub, Execução e Peso da Etapa Pai (planejada_pai)
                             supabase.table("cronograma").update({
                                 "etapa": f"{pai} | {nv_sub}", 
                                 "planejada": st.session_state[f"pi_{row['id']}"], 
                                 "porcentagem": st.session_state[f"ei_{row['id']}"],
-                                "planejada_pai": pesos_pai[pai] # Esta coluna salva o peso da etapa pai no banco
+                                "planejada_pai": pesos_pai[pai]
                             }).eq("id", row['id']).execute()
-                            
-                            # Atualiza o peso da etapa pai em todas as irmãs desta pasta para não haver conflito
-                            supabase.table("cronograma").update({"planejada_pai": pesos_pai[pai]}).eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
-                            
                             st.cache_data.clear(); st.rerun()
                         
                         if r1c4.button("🗑️", key=f"d_{row['id']}"):
@@ -262,14 +264,13 @@ with tabs[1]:
                     if st.button("Criar", key=f"btn_new_sub_{i}"):
                         if nova_sub_n:
                             st.session_state[exp_key] = True
-                            supabase.table("cronograma").insert({
-                                "id_obra": id_obra_atual, 
-                                "etapa": f"{pai} | {nova_sub_n}", 
-                                "porcentagem": 0, 
-                                "planejada": 0,
-                                "planejada_pai": pesos_pai[pai]
-                            }).execute()
+                            supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{pai} | {nova_sub_n}", "porcentagem": 0, "planejada": 0, "planejada_pai": pesos_pai[pai]}).execute()
                             st.cache_data.clear(); st.rerun()
+
+        st.divider()
+        c_met1, c_met2 = st.columns([1, 3])
+        c_met1.metric("🏗️ TOTAL DA OBRA", f"{progresso_geral_obra*100:.2f}%")
+        c_met2.progress(min(progresso_geral_obra, 1.0))
 # 3. ABA TAREFAS
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
