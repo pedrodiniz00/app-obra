@@ -160,113 +160,141 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# 2. ABA CRONOGRAMA (PESOS, EDIÇÃO, EXCLUSÃO E ORDENAÇÃO)
+# 2. ABA CRONOGRAMA (CÓDIGO INTEGRAL)
 with tabs[1]:
-    st.subheader("📅 Cronograma: Gestão e Ordenação")
+    st.subheader("📅 Cronograma: Pesos Hierárquicos e Progresso Real")
     
     if not crono_f.empty:
-        # Preparação dos dados com suporte a ordenação
+        # Preparação dos dados: Separação de nomes e extração de únicos
         crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
-        # Ordena primeiro pelo peso/index da etapa pai e depois pela subetapa
-        etapas_uniques = sorted(crono_f['pai'].unique(), key=lambda x: crono_f[crono_f['pai'] == x]['ordem_pai'].iloc[0] if 'ordem_pai' in crono_f.columns else 0)
+        etapas_uniques = sorted(crono_f['pai'].unique())
         
-        # --- PASSO 1: PESOS E ORDEM DAS ETAPAS PAI ---
-        st.markdown("### 🏗️ 1. Configuração das Etapas")
+        # --- PASSO 1: PESOS DAS ETAPAS PAI (PERSISTENTE) ---
+        st.markdown("### 🏗️ 1. Pesos das Etapas Pai")
+        cols_pai = st.columns(len(etapas_uniques))
         pesos_pai = {}
         soma_total_pai = 0
         
         for idx, pai in enumerate(etapas_uniques):
+            # Tenta buscar o peso salvo no banco (coluna planejada_pai)
             subset_pai_ref = crono_f[crono_f['pai'] == pai]
-            peso_banco = float(subset_pai_ref['planejada_pai'].iloc[0]) if 'planejada_pai' in subset_pai_ref.columns and not subset_pai_ref.empty and subset_pai_ref['planejada_pai'].iloc[0] is not None else 10.0
-            ordem_p_banco = int(subset_pai_ref['ordem_pai'].iloc[0]) if 'ordem_pai' in subset_pai_ref.columns and not subset_pai_ref.empty else idx
+            # Se a coluna existir e tiver valor, usa ele. Senão, padrão 10.
+            peso_banco = 10.0
+            if 'planejada_pai' in subset_pai_ref.columns and not subset_pai_ref.empty:
+                val = subset_pai_ref['planejada_pai'].iloc[0]
+                peso_banco = float(val) if val is not None else 10.0
             
-            col_p1, col_p2 = st.columns([3, 1])
-            pesos_pai[pai] = col_p1.number_input(f"{pai} (%)", 0, 100, int(peso_banco), key=f"wp_{pai}")
-            # Campo de Ordem para "arrastar" logicamente a posição
-            nova_ordem_p = col_p2.number_input("Ordem", 0, 100, ordem_p_banco, key=f"op_{pai}")
+            pesos_pai[pai] = cols_pai[idx].number_input(f"{pai} (%)", 0, 100, int(peso_banco), key=f"wp_{pai}")
             soma_total_pai += pesos_pai[pai]
-            
-            # Atualiza ordem se mudar
-            if nova_ordem_p != ordem_p_banco:
-                supabase.table("cronograma").update({"ordem_pai": nova_ordem_p}).eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
-
-        if st.button("💾 Salvar Configurações de Etapas", use_container_width=True):
-            for p_nome, p_valor in pesos_pai.items():
-                supabase.table("cronograma").update({"planejada_pai": p_valor}).eq("id_obra", id_obra_atual).ilike("etapa", f"{p_nome}%").execute()
-            st.cache_data.clear(); st.rerun()
         
-        if soma_total_pai != 100: st.warning(f"⚠️ Soma: {soma_total_pai}%")
+        # Botão central para salvar os pesos das etapas pai
+        if st.button("💾 Salvar Pesos das Etapas", use_container_width=True):
+            try:
+                for p_nome, p_valor in pesos_pai.items():
+                    supabase.table("cronograma").update({"planejada_pai": p_valor}).eq("id_obra", id_obra_atual).ilike("etapa", f"{p_nome}%").execute()
+                st.cache_data.clear()
+                st.success("Pesos das etapas pai salvos!")
+                st.rerun()
+            except Exception as e:
+                st.error("Erro ao salvar: Verifique se a coluna 'planejada_pai' existe no Supabase.")
+
+        if soma_total_pai != 100:
+            st.warning(f"⚠️ Soma das Etapas Pai: **{soma_total_pai}%**. Ajuste para 100%.")
+        else:
+            st.success(f"✅ Soma das Etapas Pai: 100%")
         
         progresso_geral_obra = 0
         st.divider()
 
-        # --- PASSO 2: DETALHAMENTO E EXCLUSÃO ---
+        # --- PASSO 2: DETALHAMENTO, EDIÇÃO E SUBETAPAS ---
         for i, pai in enumerate(etapas_uniques, 1):
-            subset = crono_f[crono_f['pai'] == pai].sort_values(by='ordem_sub' if 'ordem_sub' in crono_f.columns else 'sub')
-            exp_key = f"exp_state_{id_obra_atual}_{pai}"
-            if exp_key not in st.session_state: st.session_state[exp_key] = False
-
-            soma_pesos_sub = sum(st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada']) for _, sub_r in subset.iterrows())
-            conclusao_etapa_pai = sum((st.session_state.get(f"ei_{r['id']}", r['porcentagem'])/100) * (st.session_state.get(f"pi_{r['id']}", r['planejada'])/soma_pesos_sub) for _, r in subset.iterrows()) if soma_pesos_sub > 0 else 0
-            progresso_geral_obra += (conclusao_etapa_pai * (pesos_pai[pai] / 100))
+            subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
             
-            c_header, c_edit_p, c_del_p = st.columns([8, 1, 1])
+            # Memória de estado do expander
+            exp_key = f"exp_state_{id_obra_atual}_{pai}"
+            if exp_key not in st.session_state: 
+                st.session_state[exp_key] = False
+
+            # Cálculo dinâmico para o cabeçalho
+            soma_pesos_sub = sum(st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada']) for _, sub_r in subset.iterrows())
+            conclusao_etapa_pai = 0
+            if soma_pesos_sub > 0:
+                for _, sub_r in subset.iterrows():
+                    v_exec = st.session_state.get(f"ei_{sub_r['id']}", sub_r['porcentagem'])
+                    v_peso_sub = st.session_state.get(f"pi_{sub_r['id']}", sub_r['planejada'])
+                    conclusao_etapa_pai += (v_exec / 100) * (v_peso_sub / soma_pesos_sub)
+            
+            progresso_geral_obra += (conclusao_etapa_pai * (pesos_pai[pai] / 100))
+            status_soma_sub = f"✅ 100%" if soma_pesos_sub == 100 else f"⚠️ Soma: {int(soma_pesos_sub)}%"
+            
+            # Cabeçalho com edição de nome da Etapa Pai
+            c_header, c_edit_p = st.columns([9, 1])
             with c_header:
-                exp = st.expander(f"📁 {pai} — {conclusao_etapa_pai*100:.1f}% | Soma Sub: {int(soma_pesos_sub)}%", expanded=st.session_state[exp_key])
+                exp = st.expander(f"📁 {pai} — Concluído: {conclusao_etapa_pai*100:.1f}% | {status_soma_sub}", expanded=st.session_state[exp_key])
             with c_edit_p:
                 with st.popover("✏️"):
-                    novo_n_pai = st.text_input("Novo nome", value=pai, key=f"ed_p_{i}")
-                    if st.button("OK", key=f"bt_p_{i}"):
-                        for _, r in subset.iterrows():
-                            supabase.table("cronograma").update({"etapa": f"{novo_n_pai} | {r['sub']}"}).eq("id", r['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-            with c_del_p:
-                if st.button("🗑️", key=f"del_pai_{i}", help="Excluir Etapa Pai e todas as Subetapas"):
-                    supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
-                    st.cache_data.clear(); st.rerun()
+                    novo_n_pai = st.text_input("Renomear Pasta", value=pai, key=f"edit_pai_txt_{i}")
+                    if st.button("OK", key=f"btn_edit_pai_{i}"):
+                        if novo_n_pai and novo_n_pai != pai:
+                            for _, r_u in subset.iterrows():
+                                supabase.table("cronograma").update({"etapa": f"{novo_n_pai} | {r_u['sub']}"}).eq("id", r_u['id']).execute()
+                            st.cache_data.clear(); st.rerun()
 
             with exp:
                 st.session_state[exp_key] = True 
                 for j, (_, row) in enumerate(subset.iterrows(), 1):
                     with st.container(border=True):
-                        r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns([0.4, 6.0, 1.5, 0.7, 0.7])
-                        r1c1.write(f"**{j}**")
-                        nv_sub = r1c2.text_input("Subetapa", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
-                        nv_ord_s = r1c3.number_input("Ordem", 0, 100, int(row.get('ordem_sub', 0)), key=f"os_{row['id']}")
+                        r1c1, r1c2, r1c3, r1c4 = st.columns([0.4, 8.0, 0.7, 0.7])
+                        r1c1.write(f"**{i}.{j}**")
+                        nv_sub = r1c2.text_input("Atividade", row['sub'], key=f"n_{row['id']}", label_visibility="collapsed")
                         
-                        if r1c4.button("💾", key=f"s_{row['id']}"):
+                        if r1c3.button("💾", key=f"s_{row['id']}"):
                             st.session_state[exp_key] = True
                             supabase.table("cronograma").update({
-                                "etapa": f"{pai} | {nv_sub}", "planejada": st.session_state[f"pi_{row['id']}"], 
-                                "porcentagem": st.session_state[f"ei_{row['id']}"], "ordem_sub": nv_ord_s
+                                "etapa": f"{pai} | {nv_sub}", 
+                                "planejada": st.session_state[f"pi_{row['id']}"], 
+                                "porcentagem": st.session_state[f"ei_{row['id']}"],
+                                "planejada_pai": pesos_pai[pai]
                             }).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         
-                        if r1c5.button("🗑️", key=f"d_{row['id']}"):
+                        if r1c4.button("🗑️", key=f"d_{row['id']}"):
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         
                         r2c1, r2c2, r2c3, r2c4 = st.columns([0.4, 3.0, 3.0, 4.0])
-                        nv_p = r2c2.number_input("Peso (%)", 0, 100, int(row.get('planejada', 0)), key=f"pi_{row['id']}")
-                        nv_e = r2c3.number_input("Exec (%)", 0, 100, int(row['porcentagem']), key=f"ei_{row['id']}")
-                        r2c4.write(f"Impacto: **{((nv_e/100)*(nv_p/100 if soma_pesos_sub > 0 else 0)*(pesos_pai[pai]/100))*100:.2f}%**")
+                        nv_p = r2c2.number_input("Peso na Etapa (%)", 0, 100, int(row.get('planejada', 0)), key=f"pi_{row['id']}")
+                        nv_e = r2c3.number_input("Executado (%)", 0, 100, int(row['porcentagem']), key=f"ei_{row['id']}")
+                        
+                        impacto = ( (nv_e/100)*(nv_p/100 if soma_pesos_sub > 0 else 0)*(pesos_pai[pai]/100) )*100
+                        r2c4.write(f"Contribuição no Total: **{impacto:.2f}%**")
 
-                with st.popover("➕ Nova Subetapa"):
-                    nova_s = st.text_input("Nome", key=f"nt_{i}")
-                    if st.button("Add", key=f"nb_{i}"):
-                        supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{pai} | {nova_s}", "planejada_pai": pesos_pai[pai], "ordem_pai": nova_ordem_p}).execute()
-                        st.cache_data.clear(); st.rerun()
+                # Adicionar Subetapa
+                st.markdown("---")
+                with st.popover(f"➕ Nova Subetapa em {pai}"):
+                    nova_s_n = st.text_input("Nome da Atividade", key=f"new_sub_txt_{i}")
+                    if st.button("Adicionar", key=f"btn_new_sub_{i}"):
+                        if nova_s_n:
+                            st.session_state[exp_key] = True
+                            supabase.table("cronograma").insert({
+                                "id_obra": id_obra_atual, "etapa": f"{pai} | {nova_s_n}", 
+                                "porcentagem": 0, "planejada": 0, "planejada_pai": pesos_pai[pai]
+                            }).execute()
+                            st.cache_data.clear(); st.rerun()
 
+        # --- BARRA DE PROGRESSO FINAL ---
         st.divider()
-        st.metric("🏗️ TOTAL DA OBRA", f"{progresso_geral_obra*100:.2f}%")
-        st.progress(min(progresso_geral_obra, 1.0))
+        c_m1, c_m2 = st.columns([1, 3])
+        c_m1.metric("🏗️ TOTAL DA OBRA", f"{progresso_geral_obra*100:.2f}%")
+        c_m2.progress(min(progresso_geral_obra, 1.0))
         
         with st.popover("📁 Criar Nova Pasta Principal"):
-            n_p = st.text_input("Nome da Pasta")
+            n_pasta = st.text_input("Nome da Pasta")
             if st.button("Criar"):
-                supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{n_p} | Início", "planejada": 100}).execute()
-                st.cache_data.clear(); st.rerun()
+                if n_pasta:
+                    supabase.table("cronograma").insert({"id_obra": id_obra_atual, "etapa": f"{n_pasta} | Início", "porcentagem": 0, "planejada": 100}).execute()
+                    st.cache_data.clear(); st.rerun()
 # 3. ABA TAREFAS
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
