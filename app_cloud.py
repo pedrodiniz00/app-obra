@@ -160,7 +160,7 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-## 2. ABA CRONOGRAMA (PESOS HIERÁRQUICOS COM SOMA DE TOTAIS)
+# 2. ABA CRONOGRAMA (ALTERAÇÃO: PESOS HIERÁRQUICOS COM SOMA DE TOTAIS)
 with tabs[1]:
     st.subheader("📅 Cronograma: Pesos Hierárquicos")
     if not crono_f.empty:
@@ -168,20 +168,20 @@ with tabs[1]:
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
         etapas_uniques = sorted(crono_f['pai'].unique())
         
-        # --- SOMA DAS ETAPAS PAI ---
-        st.info("📌 Defina o peso de cada Etapa Pai (Soma atual deve ser 100%).")
-        cols_pai = st.columns(len(etapas_uniques))
+        # --- CÁLCULO DA SOMA TOTAL DAS ETAPAS PAI ---
         pesos_pai = {}
         soma_total_pai = 0
+        st.write("**Pesos das Etapas Pai (Soma para 100% da Obra):**")
+        cols_pai = st.columns(len(etapas_uniques))
         for idx, pai in enumerate(etapas_uniques):
             pesos_pai[pai] = cols_pai[idx].number_input(f"{pai} (%)", 0, 100, 10, key=f"wp_{pai}")
             soma_total_pai += pesos_pai[pai]
         
-        # Exibe alerta se a soma das etapas pai for diferente de 100
+        # Alerta visual da soma global
         if soma_total_pai != 100:
-            st.warning(f"⚠️ A soma das Etapas Pai está em **{soma_total_pai}%**. Ajuste para 100%.")
+            st.warning(f"⚠️ Soma das Etapas Pai: **{soma_total_pai}%** (Ajuste para 100%)")
         else:
-            st.success(f"✅ Soma das Etapas Pai: {soma_total_pai}%")
+            st.success(f"✅ Soma das Etapas Pai: **100%**")
         
         prog_total = 0
         st.divider()
@@ -189,30 +189,15 @@ with tabs[1]:
         for i, pai in enumerate(etapas_uniques, 1):
             subset = crono_f[crono_f['pai'] == pai].sort_values(by='sub')
             
-            # --- SOMA DAS SUBETAPAS NA PASTA ---
+            # --- CÁLCULO DA SOMA DAS SUBETAPAS ---
             soma_pesos_sub = subset['planejada'].sum()
             prog_pai = sum((r['porcentagem']/100)*(r['planejada']/soma_pesos_sub) for _,r in subset.iterrows()) if soma_pesos_sub > 0 else 0
             prog_total += (prog_pai * (pesos_pai[pai]/100))
             
-            # Título do Expander com indicação de soma interna
-            status_soma_sub = f"⚠️ Soma Sub: {int(soma_pesos_sub)}%" if soma_pesos_sub != 100 else "✅ 100%"
-            c_f, c_e, c_d = st.columns([6, 1, 1])
-            with c_f: 
-                exp = st.expander(f"📁 {pai} — Progresso: {prog_pai*100:.1f}% | {status_soma_sub}")
+            # Indicador de soma na aba do expander
+            status_soma_sub = f"⚠️ Soma: {int(soma_pesos_sub)}%" if soma_pesos_sub != 100 else "✅ 100%"
             
-            with c_e:
-                with st.popover("✏️"):
-                    nv = st.text_input("Renomear Pasta", value=pai, key=f"rn_{i}")
-                    if st.button("OK", key=f"brn_{i}"):
-                        for _, r in subset.iterrows():
-                            supabase.table("cronograma").update({"etapa": f"{nv} | {r['sub']}"}).eq("id", r['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-            with c_d:
-                if st.button("🗑️", key=f"dl_{i}"):
-                    supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
-                    st.cache_data.clear(); st.rerun()
-            
-            with exp:
+            with st.expander(f"📁 {pai} — Progresso: {prog_pai*100:.1f}% | {status_soma_sub}"):
                 for j, (_, row) in enumerate(subset.iterrows(), 1):
                     with st.container(border=True):
                         r1c1, r1c2, r1c3, r1c4 = st.columns([0.4, 8.0, 0.7, 0.7])
@@ -226,19 +211,22 @@ with tabs[1]:
                                 "porcentagem": st.session_state[f"ex_{row['id']}"]
                             }).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
+                        
                         if r1c4.button("🗑️", key=f"d_{row['id']}"):
                             supabase.table("cronograma").delete().eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
                         
                         r2c1, r2c2, r2c3, r2c4 = st.columns([0.4, 3.0, 3.0, 4.0])
+                        # Peso da subetapa em relação à etapa pai
                         st.session_state[f"pl_{row['id']}"] = r2c2.number_input("Peso na Etapa (%)", 0, 100, int(row.get('planejada', 0)), key=f"pi_{row['id']}")
+                        # Porcentagem executada da subetapa
                         st.session_state[f"ex_{row['id']}"] = r2c3.number_input("Executado (%)", 0, 100, int(row['porcentagem']), key=f"ei_{row['id']}")
                         
-                        impacto_individual = (st.session_state[f"ex_{row['id']}"]/100) * (st.session_state[f"pl_{row['id']}"]/100 if soma_pesos_sub > 0 else 0) * (pesos_pai[pai]/100)
-                        r2c4.write(f"Impacto na Obra: **{impacto_individual*100:.2f}%**")
+                        impacto_obra = (st.session_state[f"ex_{row['id']}"]/100) * (st.session_state[f"pl_{row['id']}"]/100 if soma_pesos_sub > 0 else 0) * (pesos_pai[pai]/100)
+                        r2c4.write(f"Impacto no Total: **{impacto_obra*100:.2f}%**")
         
         st.divider()
-        st.metric("🏗️ PROGRESSO TOTAL DA OBRA", f"{prog_total*100:.2f}%")
+        st.metric("🏗️ PROGRESSO REAL DA OBRA (TOTAL)", f"{prog_total*100:.2f}%")
         st.progress(min(prog_total, 1.0))
 # 3. ABA TAREFAS
 with tabs[2]:
