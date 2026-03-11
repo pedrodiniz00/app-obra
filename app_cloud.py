@@ -24,7 +24,6 @@ supabase = init_connection()
 # --- PADRÃO DE ETAPAS ---
 ETAPAS_PADRAO = [
     {"pai": "1. Planejamento e Preliminares", "sub": "Projetos e Aprovações"},
-    {"pai": "1. Planejamento e Preliminares", "sub": "Limpeza do Terreno"},
     {"pai": "2. Infraestrutura (Fundação)", "sub": "Gabarito e Marcação"},
     {"pai": "3. Supraestrutura (Estrutura)", "sub": "Pilares"},
     {"pai": "4. Alvenaria e Vedação", "sub": "Levantamento de Paredes"},
@@ -98,7 +97,6 @@ with st.sidebar:
     if not DB['obras'].empty:
         DB['obras']['arquivada'] = DB['obras']['arquivada'].apply(lambda x: str(x).lower() in ['true', '1', 't'])
         df_f = DB['obras'][DB['obras']['arquivada'] == ver_arquivadas]
-        
         if not df_f.empty:
             opcoes = df_f.apply(lambda x: f"{int(x['id'])} - {x['nome']}", axis=1).tolist()
             selecao = st.selectbox("Selecione a Obra:", opcoes)
@@ -108,18 +106,15 @@ with st.sidebar:
             orc_p_db = float(row_o.get('orcamento_pedreiro', 0) or 0)
             orc_c_db = float(row_o.get('orcamento_cliente', 0) or 0)
             status_arq = row_o['arquivada']
-
             with st.popover("✏️ Editar Nome"):
                 nv_nome = st.text_input("Nome", value=nome_obra)
                 if st.button("Salvar Nome"):
                     supabase.table("obras").update({"nome": nv_nome}).eq("id", id_obra_atual).execute()
                     st.cache_data.clear(); st.rerun()
-            
             txt_b = "📥 Ativar Obra" if status_arq else "📦 Arquivar Obra"
             if st.button(txt_b):
                 supabase.table("obras").update({"arquivada": not status_arq}).eq("id", id_obra_atual).execute()
                 st.cache_data.clear(); st.rerun()
-
     st.markdown("---")
     with st.expander("➕ Nova Obra"):
         n_nome = st.text_input("Nome da Nova Obra")
@@ -149,7 +144,6 @@ with tabs[0]:
         c1, c2, c3 = st.columns(3)
         opcoes_etapa = sorted(crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x).unique().tolist()) if not crono_f.empty else []
         etapa_fin = c1.selectbox("Etapa", opcoes_etapa + ["Mão de Obra"])
-        
         if etapa_fin == "Mão de Obra":
             p_lista = DB['prestadores']['nome'].tolist() if 'nome' in DB['prestadores'].columns else []
             desc = c2.selectbox("Prestador", p_lista) if p_lista else c2.text_input("Nome")
@@ -159,7 +153,6 @@ with tabs[0]:
             desc = c2.selectbox("Material", m_lista) if m_lista else c2.text_input("Descrição")
             f_lista = DB['fornecedores']['nome'].tolist() if 'nome' in DB['fornecedores'].columns else []
             forn_vinculo = c3.selectbox("Fornecedor", ["-"] + f_lista)
-        
         valor = st.number_input("Valor Unitário (R$)", 0.0, format="%.2f")
         qtd = st.number_input("Qtd", 1.0, step=0.1)
         dt_in = st.date_input("Data", format="DD/MM/YYYY")
@@ -167,30 +160,46 @@ with tabs[0]:
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc, "valor": valor, "qtd": qtd, "total": valor*qtd, "etapa": etapa_fin, "data": str(dt_in), "fornecedor": forn_vinculo if forn_vinculo != "-" else ""}).execute()
             st.success("Salvo!"); st.cache_data.clear()
 
-# 2. ABA CRONOGRAMA (Alterada conforme solicitação)
+# 2. ABA CRONOGRAMA (CÁLCULO DE PESOS AUTOMÁTICO PELO PLANEJADO)
 with tabs[1]:
-    st.subheader("📅 Cronograma: Planejado vs Executado")
+    st.subheader("📅 Cronograma: Pesos calculados pelo Planejado")
     
     if not crono_f.empty:
         crono_f['pai'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[0] if ' | ' in x else x)
         crono_f['sub'] = crono_f['etapa'].apply(lambda x: x.split(' | ')[1] if ' | ' in x else "")
-        resumo_etapas = crono_f.groupby('pai').agg({'porcentagem': 'mean', 'planejada': 'mean'}).reset_index()
         
-        with st.expander("⚖️ Configurar Pesos das Etapas", expanded=False):
-            cols_p = st.columns(len(resumo_etapas))
-            pesos_dict = {}
-            for i, r_pai in resumo_etapas.iterrows():
-                pesos_dict[r_pai['pai']] = cols_p[i].number_input(f"{r_pai['pai']}", 0, 100, 10, key=f"w_{r_pai['pai']}")
+        # LOGICA DE PESOS AUTOMÁTICOS:
+        # Soma de todos os valores planejados da obra
+        soma_plan_total = crono_f['planejada'].sum()
         
-        total_exec = sum((row['porcentagem'] / 100) * pesos_dict.get(row['pai'], 0) for _, row in resumo_etapas.iterrows())
+        # Agrupar por etapa pai para calcular a média de execução e o peso automático
+        resumo_etapas = crono_f.groupby('pai').agg({'porcentagem': 'mean', 'planejada': 'sum'}).reset_index()
+        
+        # Calcular o peso de cada etapa pai baseado na sua fatia do planejamento total
+        if soma_plan_total > 0:
+            resumo_etapas['peso_auto'] = (resumo_etapas['planejada'] / soma_plan_total) * 100
+        else:
+            resumo_etapas['peso_auto'] = 100 / len(resumo_etapas) # Peso igual se tudo estiver zero
+
+        # Cálculo do Progresso Real da Obra usando os pesos automáticos
+        total_exec = sum((row['porcentagem'] / 100) * row['peso_auto'] for _, row in resumo_etapas.iterrows())
+        
         st.metric("🏗️ PROGRESSO REAL DA OBRA", f"{total_exec:.2f}%")
-        st.progress(total_exec / 100 if total_exec <= 100 else 1.0)
+        st.progress(total_exec / 100 if total_exec <= 1.0 else 1.0)
+        
+        with st.expander("📊 Visualizar Pesos Calculados (Baseado no Planejado)"):
+            st.write("O peso de cada etapa é definido pela soma do Planejado (P%) dela em relação ao total da obra.")
+            df_pesos = resumo_etapas[['pai', 'peso_auto']].copy()
+            df_pesos.columns = ['Etapa Pai', 'Peso Atual (%)']
+            st.table(df_pesos.style.format({'Peso Atual (%)': '{:.2f}%'}))
 
         st.divider()
         for i, pai in enumerate(sorted(crono_f['pai'].unique()), 1):
             media_da_pasta = resumo_etapas[resumo_etapas['pai'] == pai]['porcentagem'].values[0]
+            peso_da_pasta = resumo_etapas[resumo_etapas['pai'] == pai]['peso_auto'].values[0]
+            
             c_f, c_e, c_d = st.columns([6, 1, 1])
-            with c_f: exp = st.expander(f"📁 {pai} — Concluído: {media_da_pasta:.1f}%")
+            with c_f: exp = st.expander(f"📁 {pai} — Concluído: {media_da_pasta:.1f}% (Peso: {peso_da_pasta:.1f}%)")
             with c_e:
                 with st.popover("✏️"):
                     nv = st.text_input("Renomear Pasta", value=pai, key=f"ep_{i}")
@@ -225,7 +234,7 @@ with tabs[1]:
 
                         # LINHA 2: CAMPOS P E E (ABAIXO)
                         r2_c1, r2_c2, r2_c3, r2_c4 = st.columns([0.4, 2.0, 2.0, 5.0])
-                        nv_p = r2_c2.number_input("P% (Plan.)", 0, 100, int(row.get('planejada', 0)), key=f"pl_{row['id']}")
+                        nv_p = r2_c2.number_input("P% (Plan.)", 0, 1000, int(row.get('planejada', 0)), key=f"pl_{row['id']}")
                         nv_e = r2_c3.number_input("E% (Exec.)", 0, 100, int(row['porcentagem']), key=f"ex_{row['id']}")
                         
                         status_texto = "✅ Concluída" if nv_e >= 100 else "🚧 Em Andamento"
@@ -281,14 +290,6 @@ with tabs[5]:
         if st.form_submit_button("Lançar"):
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": f"Pgto: {p_sel}" if "Saída" in tp else tp, "total": v_l, "etapa": "Mão de Obra" if "Saída" in tp else "Entrada Cliente", "data": str(d_l)}).execute()
             st.cache_data.clear(); st.rerun()
-    st.divider()
-    c_saida, c_entrada = st.columns(2)
-    with c_saida: 
-        st.error("🔴 Saídas (Mão de Obra)")
-        st.data_editor(p_m[['id', 'data', 'descricao', 'total']] if not p_m.empty else pd.DataFrame(columns=['id','data','descricao','total']), key="eds", hide_index=True, use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
-    with c_entrada:
-        st.success("🟢 Entradas (Cliente)")
-        st.data_editor(r_cl[['id', 'data', 'descricao', 'total']] if not r_cl.empty else pd.DataFrame(columns=['id','data','descricao','total']), key="ede", hide_index=True, use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
 
 # 7. ABA CADASTRO
 with tabs[6]:
@@ -302,16 +303,15 @@ with tabs[6]:
         if not DB['materiais'].empty: st.data_editor(DB['materiais'][['id', 'nome']], use_container_width=True, hide_index=True)
     with s_f:
         with st.form("a_f", clear_on_submit=True):
-            f1, f2, f3 = st.columns(3); fn, ft, fc = f1.text_input("Loja"), f2.text_input("Fone"), f3.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Outros"])
+            fn, ft, cat = st.columns(3)
             if st.form_submit_button("Salvar Fornecedor"):
-                supabase.table("fornecedores").insert({"nome": fn, "telefone": ft, "categoria": fc}).execute(); st.cache_data.clear()
-        if not DB['fornecedores'].empty: st.data_editor(DB['fornecedores'][['id', 'nome', 'telefone', 'categoria']], use_container_width=True, hide_index=True)
+                supabase.table("fornecedores").insert({"nome": fn.text_input("Loja"), "telefone": ft.text_input("Fone"), "categoria": cat.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Outros"])}).execute(); st.cache_data.clear()
 
 # 8. ABA PRESTADORES
 with tabs[7]:
     st.subheader("👷 Prestadores de Serviço")
     with st.form("a_pre", clear_on_submit=True):
-        np, ep = st.columns(2); n_v = np.text_input("Nome"); e_v = ep.text_input("Especialidade")
+        np, ep = st.columns(2)
         if st.form_submit_button("Cadastrar Profissional"):
-            supabase.table("prestadores").insert({"nome": n_v, "especialidade": e_v}).execute(); st.cache_data.clear()
+            supabase.table("prestadores").insert({"nome": np.text_input("Nome"), "especialidade": ep.text_input("Especialidade")}).execute(); st.cache_data.clear()
     if not DB['prestadores'].empty: st.data_editor(DB['prestadores'][['id', 'nome', 'especialidade']], use_container_width=True, hide_index=True)
