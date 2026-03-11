@@ -245,7 +245,7 @@ with tabs[4]:
     c1, c2, c3 = st.columns(3); c1.metric("Orçado", formatar_moeda(orc_c_db)); c2.metric("Gasto", formatar_moeda(tg)); c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
     if not custos_f.empty: st.bar_chart(custos_f.groupby('etapa')['total'].sum())
 
-# 6. ABA PAGAMENTOS (COM TABELAS DETALHADAS)
+# 6. ABA PAGAMENTOS (COM FILTRO DE PRESTADORES)
 with tabs[5]:
     st.subheader("💰 Pagamentos e Entradas")
     with st.expander("⚙️ Configurar Orçamentos"):
@@ -259,12 +259,20 @@ with tabs[5]:
     with st.form("f_pg", clear_on_submit=True):
         cp1, cp2, cp3, cp4 = st.columns(4)
         tp = cp1.selectbox("Tipo", ["Saída (Pagto Pedreiro)", "Entrada (Aporte Cliente)"])
-        rf = cp2.text_input("Referência")
+        
+        # Filtro de Prestadores para o campo Referência em caso de Saída
+        p_lista = DB['prestadores']['nome'].tolist() if 'nome' in DB['prestadores'].columns else []
+        if tp == "Saída (Pagto Pedreiro)":
+            rf = cp2.selectbox("Referência (Prestador)", ["-"] + p_lista)
+        else:
+            rf = cp2.text_input("Referência")
+            
         vl = cp3.number_input("Valor R$", 0.0)
         dt = cp4.date_input("Data")
         if st.form_submit_button("Lançar"):
+            desc_final = f"Ref: {rf}" if rf != "-" else "Pagamento Mão de Obra"
             etp = "Mão de Obra" if "Saída" in tp else "Entrada Cliente"
-            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": f"Ref: {rf}", "total": vl, "etapa": etp, "data": str(dt)}).execute()
+            supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": desc_final, "total": vl, "etapa": etp, "data": str(dt)}).execute()
             st.cache_data.clear(); st.rerun()
 
     st.divider()
