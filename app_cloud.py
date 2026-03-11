@@ -133,13 +133,13 @@ if id_obra_atual == 0:
     st.info("👈 Selecione uma obra na barra lateral.")
     st.stop()
 
-# Filtragem de dados
 custos_f = DB['custos'][DB['custos']['id_obra'] == id_obra_atual] if not DB['custos'].empty else pd.DataFrame()
 crono_f = DB['cronograma'][DB['cronograma']['id_obra'] == id_obra_atual] if not DB['cronograma'].empty else pd.DataFrame()
 tarefas_f = DB['tarefas'][DB['tarefas']['id_obra'] == id_obra_atual] if not DB['tarefas'].empty else pd.DataFrame()
 
 # --- ABAS ---
-tabs = st.tabs(["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos", "📦 Cadastro", "👷 Prestadores"])
+tab_titles = ["📝 Lançar", "📅 Cronograma", "✅ Tarefas", "📊 Histórico", "📈 Dash", "💰 Pagamentos", "📦 Cadastro", "👷 Prestadores"]
+tabs = st.tabs(tab_titles)
 
 # 1. ABA LANÇAR
 with tabs[0]:
@@ -184,14 +184,25 @@ with tabs[1]:
         total_exec = sum((row['porcentagem'] / 100) * pesos_dict.get(row['pai'], 0) for _, row in resumo_etapas.iterrows())
         total_plan = sum((row['planejada'] / 100) * pesos_dict.get(row['pai'], 0) for _, row in resumo_etapas.iterrows())
         
-        st.metric("🏗️ REAL EXECUTADO", f"{total_exec:.2f}%", f"{total_exec - total_plan:.1f}% desvio")
+        st.metric("🏗️ REAL EXECUTADO", f"{total_exec:.2f}%")
         st.progress(total_exec / 100 if total_exec <= 100 else 1.0)
 
         st.divider()
         for i, pai in enumerate(sorted(crono_f['pai'].unique()), 1):
             d_pai = resumo_etapas[resumo_etapas['pai'] == pai].iloc[0]
             c_f, c_e, c_d = st.columns([6, 1, 1])
-            with c_f: exp = st.expander(f"📁 {pai} — Real: {d_pai['porcentagem']:.1f}% | Meta: {d_pai['planejada']:.1f}%")
+            with c_f: exp = st.expander(f"📁 {pai} — Progresso: {d_pai['porcentagem']:.1f}%")
+            with c_e:
+                with st.popover("✏️"):
+                    nv = st.text_input("Renomear Pasta", value=pai, key=f"ep_{i}")
+                    if st.button("OK", key=f"bp_{i}"):
+                        for _, r in crono_f[crono_f['pai'] == pai].iterrows():
+                            supabase.table("cronograma").update({"etapa": f"{nv} | {r['sub']}"}).eq("id", r['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+            with c_d:
+                if st.button("🗑️", key=f"dp_{i}"):
+                    supabase.table("cronograma").delete().eq("id_obra", id_obra_atual).ilike("etapa", f"{pai}%").execute()
+                    st.cache_data.clear(); st.rerun()
             
             with exp:
                 for j, (_, row) in enumerate(crono_f[crono_f['pai'] == pai].sort_values(by='sub').iterrows(), 1):
@@ -217,15 +228,14 @@ with tabs[1]:
                         nv_p = r2_c2.number_input("P% (Plan.)", 0, 100, int(row.get('planejada', 0)), key=f"pl_{row['id']}")
                         nv_e = r2_c3.number_input("E% (Exec.)", 0, 100, int(row['porcentagem']), key=f"ex_{row['id']}")
                         
-                        status_color = "🔴 Atrasado" if nv_e < nv_p else "🟢 Adiantado" if nv_e > nv_p else "⚪ No prazo"
-                        r2_c4.write(f"**Status:** {status_color} ({nv_e - nv_p}%)")
+                        status_texto = "✅ Concluída" if nv_e >= 100 else "🚧 Em Andamento"
+                        r2_c4.write(f"**Status:** {status_texto}")
 
 # 3. ABA TAREFAS
 with tabs[2]:
     st.subheader("📋 Gestão de Tarefas")
     with st.form("f_t", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nt, rp = c1.text_input("Tarefa"), c2.text_input("Responsável")
+        c1, c2 = st.columns(2); nt, rp = c1.text_input("Tarefa"), c2.text_input("Resp")
         if st.form_submit_button("Adicionar"):
             supabase.table("tarefas").insert({"id_obra": id_obra_atual, "descricao": nt, "responsavel": rp, "status": "Pendente"}).execute()
             st.success("Tarefa adicionada!"); st.cache_data.clear()
@@ -250,7 +260,7 @@ with tabs[4]:
     st.subheader("📈 Resumo Financeiro")
     tg = custos_f['total'].sum() if not custos_f.empty else 0
     c1, c2, c3 = st.columns(3)
-    c1.metric("Orçado (Cliente)", formatar_moeda(orc_c_db))
+    c1.metric("Orçado", formatar_moeda(orc_c_db))
     c2.metric("Gasto Atual", formatar_moeda(tg))
     c3.metric("Saldo", formatar_moeda(orc_c_db - tg))
     if not custos_f.empty: st.bar_chart(custos_f.groupby('etapa')['total'].sum())
@@ -274,24 +284,10 @@ with tabs[5]:
     res2.metric("Saldo Cliente", formatar_moeda(orc_c_db - r_cl['total'].sum() if not r_cl.empty else orc_c_db))
 
     with st.form("f_p", clear_on_submit=True):
-        cp1, cp2, cp3, cp4 = st.columns(4)
-        tp = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"])
-        p_list_p = DB['prestadores']['nome'].tolist() if 'nome' in DB['prestadores'].columns else []
-        p_sel = cp2.selectbox("Quem?", p_list_p) if (tp == "Saída (Pedreiro)" and p_list_p) else cp2.text_input("Ref/Nome")
-        v_l = cp3.number_input("Valor R$", 0.0)
-        d_l = cp4.date_input("Data")
-        if st.form_submit_button("Registrar"):
+        cp1, cp2, cp3, cp4 = st.columns(4); tp = cp1.selectbox("Tipo", ["Saída (Pedreiro)", "Entrada (Cliente)"]); p_list_p = DB['prestadores']['nome'].tolist() if 'nome' in DB['prestadores'].columns else []; p_sel = cp2.selectbox("Quem?", p_list_p) if (tp == "Saída (Pedreiro)" and p_list_p) else cp2.text_input("Ref"); v_l = cp3.number_input("R$", 0.0); d_l = cp4.date_input("Data")
+        if st.form_submit_button("Lançar"):
             supabase.table("custos").insert({"id_obra": id_obra_atual, "descricao": f"Pgto: {p_sel}" if "Saída" in tp else tp, "total": v_l, "etapa": "Mão de Obra" if "Saída" in tp else "Entrada Cliente", "data": str(d_l)}).execute()
             st.cache_data.clear(); st.rerun()
-
-    st.divider()
-    c_saida, c_entrada = st.columns(2)
-    with c_saida: 
-        st.error("🔴 Saídas (Mão de Obra)")
-        p_m_edit = st.data_editor(p_m[['id', 'data', 'descricao', 'total']] if not p_m.empty else pd.DataFrame(columns=['id','data','descricao','total']), key="eds", hide_index=True, use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
-    with c_entrada:
-        st.success("🟢 Entradas (Cliente)")
-        r_cl_edit = st.data_editor(r_cl[['id', 'data', 'descricao', 'total']] if not r_cl.empty else pd.DataFrame(columns=['id','data','descricao','total']), key="ede", hide_index=True, use_container_width=True, column_config={"total": st.column_config.NumberColumn(format="R$ %.2f")})
 
 # 7. ABA CADASTRO
 with tabs[6]:
@@ -300,21 +296,20 @@ with tabs[6]:
     with s_m:
         with st.form("a_m"):
             nm = st.text_input("Nome Material")
-            if st.form_submit_button("Salvar Material"):
+            if st.form_submit_button("Salvar"):
                 supabase.table("materiais").insert({"nome": nm}).execute(); st.cache_data.clear()
-        if not DB['materiais'].empty: st.data_editor(DB['materiais'][['id', 'nome']], key="em", hide_index=True, use_container_width=True)
+        if not DB['materiais'].empty: st.data_editor(DB['materiais'][['id', 'nome']], use_container_width=True, hide_index=True)
     with s_f:
         with st.form("a_f"):
-            f1, f2, f3 = st.columns(3); fn, ft, fc = f1.text_input("Loja"), f2.text_input("Fone"), f3.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Acabamentos", "Outros"])
+            fn, ft, cat = st.columns(3)
             if st.form_submit_button("Salvar Fornecedor"):
-                supabase.table("fornecedores").insert({"nome": fn, "telefone": ft, "categoria": fc}).execute(); st.cache_data.clear()
-        if not DB['fornecedores'].empty: st.data_editor(DB['fornecedores'][['id', 'nome', 'telefone', 'categoria']], key="efo", hide_index=True, use_container_width=True)
+                supabase.table("fornecedores").insert({"nome": fn.text_input("Loja"), "telefone": ft.text_input("Fone"), "categoria": cat.selectbox("Tipo", ["Materiais", "Elétrica", "Hidráulica", "Outros"])}).execute(); st.cache_data.clear()
 
 # 8. ABA PRESTADORES
 with tabs[7]:
     st.subheader("👷 Prestadores de Serviço")
-    with st.form("a_p"):
-        c1, c2 = st.columns(2); np, ep = c1.text_input("Nome"), c2.text_input("Especialidade")
+    with st.form("a_pre"):
+        np, ep = st.columns(2)
         if st.form_submit_button("Cadastrar Profissional"):
-            supabase.table("prestadores").insert({"nome": np, "especialidade": ep}).execute(); st.cache_data.clear()
-    if not DB['prestadores'].empty: st.data_editor(DB['prestadores'][['id', 'nome', 'especialidade']], key="epre", hide_index=True, use_container_width=True)
+            supabase.table("prestadores").insert({"nome": np.text_input("Nome"), "especialidade": ep.text_input("Especialidade")}).execute(); st.cache_data.clear()
+    if not DB['prestadores'].empty: st.data_editor(DB['prestadores'][['id', 'nome', 'especialidade']], use_container_width=True, hide_index=True)
