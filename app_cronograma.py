@@ -7,8 +7,8 @@ from supabase import create_client, Client
 st.set_page_config(page_title="ObraPro | Cronograma Independente", layout="wide", page_icon="📅")
 
 # Substitua pelas suas credenciais reais do Passo 3
-URL = "SUA_URL_DO_SUPABASE"
-KEY = "SUA_CHAVE_ANON_DO_SUPABASE"
+URL = "https://lvuqxofjcuehpztwewns.supabase.co"
+KEY = "sb_publishable_00qWWZO5j_T52RJFx8TBmg_peOk31Dh"
 
 @st.cache_resource
 def init_connection():
